@@ -80,15 +80,32 @@ installer permits plain HTTP only for loopback development addresses.
 
 Telegram and generic webhook (routing editable in `server.toml` `[notify.routing]`). Critical/Warning incidents notify by default; the same incident re-notifies at most once per `notify_min_interval_secs` (default 60s).
 
-```bash
-TELEGRAM_BOT_TOKEN=<bot token> watchtower-server --config server.toml
-# optional: pin the target chat (multi-server setups share one channel)
-TELEGRAM_CHAT_ID=123456789 watchtower-server --config server.toml
-# optional: require a password before a chat can register
-TELEGRAM_BOT_PASSWORD=<secret> watchtower-server --config server.toml
-```
+### Telegram setup
 
-Message the bot `/start` (with a password set, the bot asks for it and only then registers the chat). Without a chat id, the first chat to message the bot becomes the target. Run one server per site with the same bot token to route every site into one Telegram chat.
+1. In Telegram, talk to [@BotFather](https://t.me/BotFather): `/newbot` → pick a name → copy the token (`123456:ABC…`).
+2. Start the server with the token, plus **one** of the two ways to choose the chat:
+
+   ```bash
+   # A) recommended — password handshake: send /start to your bot, then the password
+   TELEGRAM_BOT_TOKEN=<token> TELEGRAM_BOT_PASSWORD=<secret> watchtower-server --config server.toml
+
+   # B) pinned chat — no handshake at all (required when several servers share one bot)
+   TELEGRAM_BOT_TOKEN=<token> TELEGRAM_CHAT_ID=<chat id> watchtower-server --config server.toml
+   ```
+
+   With only `TELEGRAM_BOT_TOKEN`, the first chat that messages the bot becomes the target — convenient,
+   but anyone who finds the bot first gets your alerts.
+3. Check the server log: `telegram: bot @yourbot ready` confirms the token, then `telegram: delivering to chat …`
+   (or a hint telling you what is still missing).
+4. Verify delivery end to end: `TELEGRAM_BOT_TOKEN=… TELEGRAM_CHAT_ID=… bash scripts/notify-check.sh`.
+
+To find a chat id for option B: message the bot, then open `https://api.telegram.org/bot<token>/getUpdates`
+and read `message.chat.id` (group ids are negative; add the bot to the group first).
+
+The registered/discovered chat is stored in the database, so restarts keep delivering. Messages are plain
+text, capped at Telegram's 4096-character limit (newest 10 timeline entries + a link to the full incident),
+and failed sends are retried. Wrong passwords lock a chat out after 5 attempts; the accepted password
+message is deleted from the chat.
 
 ## Exception capture SDKs
 

@@ -130,8 +130,11 @@ impl Spool {
 
     /// Post all spooled files oldest-first, in chunks of at most
     /// CHUNK_SIZE events so no single request exceeds the server body cap.
-    /// Ack what delivered; drop only permanent 4xx failures (except 408/429);
-    /// keep transport/5xx failures spooled and stop the drain.
+    /// Ack what delivered; drop only permanent 4xx failures (bad payload);
+    /// keep transport/5xx, 408/429 and auth (401/403) failures spooled and
+    /// stop the drain. Auth failures are an operator-fixable misconfig
+    /// (wrong or rotated token) — dropping on them would silently discard
+    /// everything buffered during an outage the moment the token is wrong.
     pub fn drain(&self, url: &str, token: &str) -> DrainStats {
         const CHUNK_SIZE: usize = 512;
         let mut stats = DrainStats::default();
@@ -155,7 +158,7 @@ impl Spool {
                     self.ack(&file.path);
                 }
                 Some(PostError::HttpStatus(code))
-                    if (400..500).contains(&code) && code != 408 && code != 429 =>
+                    if (400..500).contains(&code) && !matches!(code, 401 | 403 | 408 | 429) =>
                 {
                     let remaining = file.events.len() - delivered_in_file;
                     eprintln!(
@@ -530,7 +533,7 @@ mod tests {
     }
 
     #[test]
-    fn drain_drops_on_401() {
+    fn drain_keeps_spool_on_401() {
         let (url, handle) = mock_server("HTTP/1.1 401 Unauthorized");
         let dir = drain_spool_dir("401");
         std::fs::create_dir_all(&dir).unwrap();
@@ -539,8 +542,26 @@ mod tests {
         let stats = spool.drain(&url, "secret-token");
         handle.join().unwrap();
         assert_eq!(stats.delivered, 0);
+        assert_eq!(stats.dropped, 0);
+        assert_eq!(stats.deferred, 1);
+        assert_eq!(
+            spool.count(),
+            1,
+            "auth failure keeps events for a token fix"
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn drain_drops_on_400() {
+        let (url, handle) = mock_server("HTTP/1.1 400 Bad Request");
+        let dir = drain_spool_dir("400");
+        std::fs::create_dir_all(&dir).unwrap();
+        let spool = Spool::new(dir.clone());
+        spool.append(&[sample_event(1)]).unwrap();
+        let stats = spool.drain(&url, "secret-token");
+        handle.join().unwrap();
         assert_eq!(stats.dropped, 1);
-        assert_eq!(stats.deferred, 0);
         assert!(spool.read_all().is_empty(), "permanent 4xx must be acked");
         std::fs::remove_dir_all(&dir).ok();
     }

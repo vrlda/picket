@@ -125,12 +125,43 @@ pub async fn init_schema(pool: &sqlx::AnyPool) -> Result<(), sqlx::Error> {
     )
     .execute(pool)
     .await?;
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS settings (
+            key   TEXT PRIMARY KEY,
+            value TEXT NOT NULL
+        )",
+    )
+    .execute(pool)
+    .await?;
     ensure_column(
         pool,
         "hosts",
         "queue_len",
         "ALTER TABLE hosts ADD COLUMN queue_len BIGINT NOT NULL DEFAULT 0",
     )
+    .await?;
+    Ok(())
+}
+
+/// Read a persisted server setting (small key/value state that must
+/// survive restarts, e.g. the registered Telegram chat).
+pub async fn get_setting(pool: &sqlx::AnyPool, key: &str) -> Result<Option<String>, sqlx::Error> {
+    let row = sqlx::query_as::<_, (String,)>("SELECT value FROM settings WHERE key = $1")
+        .bind(key)
+        .fetch_optional(pool)
+        .await?;
+    Ok(row.map(|(v,)| v))
+}
+
+/// Upsert a persisted server setting.
+pub async fn set_setting(pool: &sqlx::AnyPool, key: &str, value: &str) -> Result<(), sqlx::Error> {
+    sqlx::query(
+        "INSERT INTO settings (key, value) VALUES ($1, $2)
+         ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+    )
+    .bind(key)
+    .bind(value)
+    .execute(pool)
     .await?;
     Ok(())
 }
@@ -187,6 +218,16 @@ mod tests {
             n >= 4,
             "hosts, events, incidents, incident_events tables exist"
         );
+    }
+
+    #[tokio::test]
+    async fn settings_roundtrip_and_upsert() {
+        let pool = test_pool().await;
+        init_schema(&pool).await.unwrap();
+        assert_eq!(get_setting(&pool, "k").await.unwrap(), None);
+        set_setting(&pool, "k", "1").await.unwrap();
+        set_setting(&pool, "k", "2").await.unwrap();
+        assert_eq!(get_setting(&pool, "k").await.unwrap().as_deref(), Some("2"));
     }
 
     #[tokio::test]
