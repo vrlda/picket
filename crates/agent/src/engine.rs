@@ -301,8 +301,15 @@ impl AgentState {
     }
 
     #[cfg(test)]
+    /// Fresh state for tests. Never loads the default state file — on a
+    /// machine where the agent has run, /var/lib/watchtower/agent-state.json
+    /// carries a live journal cursor that silently filters test fixtures.
     pub fn for_tests() -> Self {
-        AgentState::new(&Config::default(), "h-1")
+        let cfg = Config {
+            state_file: String::new(),
+            ..Config::default()
+        };
+        AgentState::new(&cfg, "h-1")
     }
 }
 
@@ -807,6 +814,14 @@ pub fn run_once(
 
 #[cfg(test)]
 mod tests {
+    /// Default config minus the system state file (see AgentState::for_tests).
+    fn test_config() -> Config {
+        Config {
+            state_file: String::new(),
+            ..Config::default()
+        }
+    }
+
     use super::*;
     use wt_common::EventKind;
 
@@ -914,7 +929,7 @@ mod tests {
 
     #[test]
     fn run_once_wires_sensors_and_emits_events() {
-        let cfg = Config::default();
+        let cfg = test_config();
         let mut deduper = Deduper::new(300);
         let mut state = AgentState::for_tests();
         let p = fixture_procfs();
@@ -929,7 +944,7 @@ mod tests {
         let cfg = Config {
             ssh_brute_threshold: 2,
             ssh_brute_window_secs: 300,
-            ..Default::default()
+            ..test_config()
         };
         let mut deduper = Deduper::new(300);
         let mut state = AgentState::new(&cfg, "h-1");
@@ -970,7 +985,7 @@ mod tests {
             r#"{"__REALTIME_TIMESTAMP":"1758000000100000","SYSLOG_IDENTIFIER":"sshd","MESSAGE":"Accepted publickey for deploy from 198.51.100.24 port 51234 ssh2"}"#,
             "",
         );
-        let cfg = Config::default();
+        let cfg = test_config();
         let mut deduper = Deduper::new(300);
         let p = fixture_procfs();
         let evs = run_once(
@@ -1004,7 +1019,7 @@ mod tests {
         let cfg = Config {
             ssh_brute_threshold: 2,
             ssh_brute_window_secs: 300,
-            ..Default::default()
+            ..test_config()
         };
         let mut deduper = Deduper::new(300);
         let mut state = AgentState::new(&cfg, "h-1");
@@ -1053,7 +1068,7 @@ mod tests {
 {"__REALTIME_TIMESTAMP":"1758000000500000","SYSLOG_IDENTIFIER":"sshd","MESSAGE":"Accepted password for root from 198.51.100.24 port 51235 ssh2"}"#,
             "",
         );
-        let cfg = Config::default();
+        let cfg = test_config();
         let mut deduper = Deduper::new(300);
         let p = fixture_procfs();
         let evs = run_once(
@@ -1080,7 +1095,7 @@ mod tests {
             r#"{"__REALTIME_TIMESTAMP":"1758000000200000","SYSLOG_IDENTIFIER":"sudo","MESSAGE":"deploy : TTY=pts/0 ; PWD=/home/deploy ; USER=root ; COMMAND=/bin/systemctl restart nginx"}"#,
             "",
         );
-        let cfg = Config::default();
+        let cfg = test_config();
         let mut deduper = Deduper::new(300);
         let p = crate::procfs::ProcFs::new(
             std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/proc"),
@@ -1106,7 +1121,7 @@ mod tests {
             r#"{"__REALTIME_TIMESTAMP":"1758000011000000","SYSLOG_IDENTIFIER":"systemd","MESSAGE":"Started myapp.service."}"#,
             "",
         );
-        let cfg = Config::default();
+        let cfg = test_config();
         let mut deduper = Deduper::new(300);
         let p = crate::procfs::ProcFs::new(
             std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/proc"),
@@ -1192,7 +1207,7 @@ mod tests {
             error_patterns: vec!["ERROR".to_string(), "Traceback".to_string()],
             error_threshold: 3,
             error_window_secs: 300,
-            ..Default::default()
+            ..test_config()
         };
         let mut state = AgentState::new(&cfg, "h-1");
         let p = crate::procfs::ProcFs::new(
@@ -1243,7 +1258,7 @@ mod tests {
 
     #[test]
     fn run_once_integrates_docker_sensor() {
-        let cfg = Config::default();
+        let cfg = test_config();
         let mut state = AgentState::new(&cfg, "h-1");
         let p = crate::procfs::ProcFs::new(
             std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/proc"),
@@ -1277,7 +1292,7 @@ mod tests {
             error_patterns: vec!["ERROR".to_string()],
             error_threshold: 2,
             error_window_secs: 300,
-            ..Default::default()
+            ..test_config()
         };
         let mut state = AgentState::new(&cfg, "h-1");
         let p = crate::procfs::ProcFs::new(
@@ -1306,7 +1321,7 @@ mod tests {
 
     #[test]
     fn run_once_emits_health_signals() {
-        let cfg = Config::default();
+        let cfg = test_config();
         let mut state = AgentState::new(&cfg, "h-1");
         let p = crate::procfs::ProcFs::new(
             std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/proc"),
@@ -1338,7 +1353,7 @@ mod tests {
 
     #[test]
     fn run_once_emits_security_signals_and_seeds_persistence() {
-        let cfg = Config::default();
+        let cfg = test_config();
         let mut state = AgentState::new(&cfg, "h-1");
         let p = crate::procfs::ProcFs::new(
             std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/proc"),
@@ -1388,7 +1403,7 @@ mod tests {
             access_log_paths: vec![log.to_string_lossy().into_owned()],
             request_rate_threshold: 3,
             request_rate_window_secs: 60,
-            ..Default::default()
+            ..test_config()
         };
         let mut state = AgentState::new(&cfg, "h-1");
         let p = crate::procfs::ProcFs::new(
@@ -1441,7 +1456,7 @@ mod tests {
         );
         let cfg = Config {
             state_file: state_file.to_string_lossy().into_owned(),
-            ..Default::default()
+            ..test_config()
         };
         let mut state = AgentState::new(&cfg, "h-1");
         let p = crate::procfs::ProcFs::new(

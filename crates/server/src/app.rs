@@ -12,7 +12,6 @@ use crate::hosts;
 use crate::ingest;
 use crate::notifier::NOTIFY_QUEUE_CAP;
 use crate::probes::Checker;
-use tower_http::services::ServeDir;
 
 pub struct AppState {
     pub pool: sqlx::AnyPool,
@@ -26,7 +25,6 @@ pub struct AppState {
     /// "permanent".
     pub max_body_bytes: usize,
     pub notify: crate::notify::NotifyConfig,
-    pub ui_base_url: String,
     /// Undelivered notifications awaiting retry (drained by the retry loop).
     pub notify_queue: std::sync::Arc<std::sync::Mutex<crate::notify::RetryQueue>>,
     /// Incident JSON enqueued by the correlation runner for the notifier task.
@@ -46,7 +44,6 @@ impl Clone for AppState {
             rules: self.rules.clone(),
             max_body_bytes: self.max_body_bytes,
             notify: self.notify.clone(),
-            ui_base_url: self.ui_base_url.clone(),
             notify_queue: self.notify_queue.clone(),
             notify_tx: self.notify_tx.clone(),
             // The receiver is single-use (spawned once by main); clones
@@ -68,7 +65,6 @@ impl AppState {
         let (notify_tx, notify_rx) = tokio::sync::mpsc::channel(NOTIFY_QUEUE_CAP);
         AppState {
             notify: cfg.notify.clone(),
-            ui_base_url: cfg.ui_base_url.clone(),
             notify_queue: std::sync::Arc::new(std::sync::Mutex::new(
                 crate::notify::RetryQueue::new(3),
             )),
@@ -129,7 +125,6 @@ pub async fn build_app(state: AppState) -> Router {
             post(api_incidents::set_status_route),
         )
         .layer(middleware::from_fn_with_state(auth, require_token))
-        .fallback_service(ServeDir::new(crate::ui_dir()))
         .with_state(state)
 }
 
@@ -143,38 +138,6 @@ mod tests {
     use axum::body::Body;
     use http::{Request, StatusCode};
     use tower::ServiceExt;
-
-    #[tokio::test]
-    async fn ui_serves_index_html() {
-        let app = build_app(AppState::for_tests().await).await;
-        let resp = app
-            .clone()
-            .oneshot(Request::builder().uri("/").body(Body::empty()).unwrap())
-            .await
-            .unwrap();
-        assert_eq!(resp.status(), StatusCode::OK);
-        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
-            .await
-            .unwrap();
-        let text = String::from_utf8_lossy(&body);
-        assert!(text.contains("Watchtower"));
-    }
-
-    #[tokio::test]
-    async fn ui_has_incidents_nav() {
-        let app = build_app(AppState::for_tests().await).await;
-        let resp = app
-            .clone()
-            .oneshot(Request::builder().uri("/").body(Body::empty()).unwrap())
-            .await
-            .unwrap();
-        assert_eq!(resp.status(), StatusCode::OK);
-        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
-            .await
-            .unwrap();
-        let text = String::from_utf8_lossy(&body);
-        assert!(text.contains("data-view=\"incidents\""));
-    }
 
     #[tokio::test]
     async fn ping_returns_ok() {

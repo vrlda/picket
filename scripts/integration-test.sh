@@ -26,6 +26,7 @@ token = "$TOKEN"
 poll_interval_secs = 1
 heartbeat_secs = 1
 spool_dir = "$WORK/spool"
+state_file = "$WORK/agent-state.json"
 EOF
 
 echo "==> building"

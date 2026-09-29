@@ -19,7 +19,7 @@ Production server autopilot. One small agent watches the health and security of 
 ## How it works
 
 - **Agent** (`watchtower-agent`) — a single binary per host. Polls systemd/journald/procfs, batches events, POSTs them to the control plane. JSONL disk spool with ack-based drain survives server outages; state (seen IPs, journal cursor, baselines) persists across restarts.
-- **Server** (`watchtower-server`) — ingests events, runs rule-based correlation, groups them into **incidents**, and notifies. SQLite by default, Postgres supported. Web UI included. An incident absorbs follow-up events (one timeline per problem) with a re-notify throttle.
+- **Server** (`watchtower-server`) — ingests events, runs rule-based correlation, groups them into **incidents**, and notifies. SQLite by default, Postgres supported. Headless — no web UI: you get alerted, and you acknowledge/resolve straight from the Telegram alert. An incident absorbs follow-up events (one timeline per problem) with a re-notify throttle.
 - **Exception capture** — apps POST exceptions to `/v1/errors`; the server fingerprints them (type + service + first frames) and each recurring bug becomes one incident — same list, timeline, resolve and notify flow as infra events.
 
 ## Quick start
@@ -72,13 +72,9 @@ The agent runs as a dedicated `watchtower` user, `NoNewPrivileges=yes`, no capab
 Remote control planes must use HTTPS (terminate TLS at a reverse proxy if needed). The
 installer permits plain HTTP only for loopback development addresses.
 
-## Web UI
-
-`http://<server>:8787/` — hosts, events, incidents (timeline, evidence, acknowledge/resolve). Token-prompted, static files served by the server itself (`WATCHTOWER_UI_DIR` for installed deploys).
-
 ## Notifications
 
-Telegram and generic webhook (routing editable in `server.toml` `[notify.routing]`). Critical/Warning incidents notify by default; the same incident re-notifies at most once per `notify_min_interval_secs` (default 60s).
+Telegram, Slack and generic webhook (routing editable in `server.toml` `[notify.routing]`). Critical/Warning incidents notify by default; the same incident re-notifies at most once per `notify_min_interval_secs` (default 60s).
 
 ### Telegram setup
 
@@ -89,7 +85,7 @@ Telegram and generic webhook (routing editable in `server.toml` `[notify.routing
    # A) recommended — password handshake: send /start to your bot, then the password
    TELEGRAM_BOT_TOKEN=<token> TELEGRAM_BOT_PASSWORD=<secret> watchtower-server --config server.toml
 
-   # B) pinned chat — no handshake at all (required when several servers share one bot)
+   # B) pinned chat — no handshake at all
    TELEGRAM_BOT_TOKEN=<token> TELEGRAM_CHAT_ID=<chat id> watchtower-server --config server.toml
    ```
 
@@ -102,10 +98,20 @@ Telegram and generic webhook (routing editable in `server.toml` `[notify.routing
 To find a chat id for option B: message the bot, then open `https://api.telegram.org/bot<token>/getUpdates`
 and read `message.chat.id` (group ids are negative; add the bot to the group first).
 
+For a systemd install, put these variables in `/etc/watchtower/server.env` (the shipped unit reads it).
+
+**Alerts and buttons.** Every alert carries **👀 Acknowledge** and **✅ Resolve** buttons. Pressing one updates
+the incident and edits the alert in place ("✅ Resolved by @alice at …"), so everyone in the chat sees who took
+it; after Acknowledge only Resolve remains, after Resolve the buttons disappear. Only presses from the
+registered chat count — in a group chat, every member can act on alerts.
+
+**One bot per server.** The buttons reach the server through the bot's update stream, which Telegram lets only
+one process read. Several servers: create one bot per server (bots are free) and add them all to the same group.
+
 The registered/discovered chat is stored in the database, so restarts keep delivering. Messages are plain
-text, capped at Telegram's 4096-character limit (newest 10 timeline entries + a link to the full incident),
-and failed sends are retried. Wrong passwords lock a chat out after 5 attempts; the accepted password
-message is deleted from the chat.
+text, capped at Telegram's 4096-character limit (newest 10 timeline entries; the full timeline is at
+`GET /v1/incidents/{id}`), and failed sends are retried. Wrong passwords lock a chat out after 5 attempts;
+the accepted password message is deleted from the chat.
 
 ## Exception capture SDKs
 
@@ -130,6 +136,7 @@ Python's `capture_exception()` grabs the current exception; Rust adds `capture_p
 | `GET /v1/hosts` | Host registry |
 | `GET /v1/events?host=&kind=&severity=&since=&limit=` | Event queries (ordered by ts, id — never arrival order) |
 | `GET /v1/incidents` | Incidents with timelines |
+| `POST /v1/incidents/{id}/ack` · `/resolve` | Acknowledge / resolve (409 if the incident is already resolved) |
 
 Curl exception reference:
 

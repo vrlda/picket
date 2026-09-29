@@ -38,7 +38,6 @@ listen = "127.0.0.1:$PORT"
 db_url = "sqlite://$WORK/notify.db"
 auth_token = "$TOKEN"
 scan_interval_secs = 5
-ui_base_url = "http://127.0.0.1:$PORT"
 
 [notify]
 slack_url = "${SLACK_URL:-}"
