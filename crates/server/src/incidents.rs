@@ -248,7 +248,13 @@ pub async fn raise_severity(
 
 /// Ack or resolve an incident at an explicit timestamp: sets the status,
 /// stamps the ack/resolve time, and bumps updated_at. Returns true when a
-/// row was updated (unknown id → false).
+/// row was updated (unknown id, or a transition that is not allowed → false).
+///
+/// Allowed transitions: open → acknowledged, open/acknowledged → resolved.
+/// A resolved incident is final: acking it would move it back into the
+/// "not resolved" set and collide with a newer open incident for the same
+/// key (unique index), and re-resolving it would push its resolved_at (and
+/// so the re-open cooldown) forward.
 pub async fn set_status_at(
     pool: &sqlx::AnyPool,
     id: &str,
@@ -258,13 +264,14 @@ pub async fn set_status_at(
     if status == IncidentStatus::Open {
         return Ok(false);
     }
-    let (wire, col) = match status {
-        IncidentStatus::Acknowledged => ("acknowledged", "acked_at"),
-        IncidentStatus::Resolved => ("resolved", "resolved_at"),
+    let (wire, col, from) = match status {
+        IncidentStatus::Acknowledged => ("acknowledged", "acked_at", "status = 'open'"),
+        IncidentStatus::Resolved => ("resolved", "resolved_at", "status != 'resolved'"),
         IncidentStatus::Open => unreachable!(),
     };
-    let query =
-        format!("UPDATE incidents SET status = $1, {col} = $2, updated_at = $2 WHERE id = $3");
+    let query = format!(
+        "UPDATE incidents SET status = $1, {col} = $2, updated_at = $2 WHERE id = $3 AND {from}"
+    );
     let res = sqlx::query(&query)
         .bind(wire)
         .bind(now)

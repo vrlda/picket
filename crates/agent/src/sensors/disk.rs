@@ -36,6 +36,9 @@ pub fn inode_severity(pct: f64, cfg: &Config) -> Severity {
 /// free_inodes, read_only).
 /// f_bavail (unprivileged-available) counts reserved blocks as used — matches
 /// what the agent's non-root user can actually see.
+// statvfs field widths differ per platform (u64 on Linux, u32/c_ulong on
+// macOS) — the casts are needed there even though they are no-ops here.
+#[allow(clippy::unnecessary_cast)]
 fn stat_mount(mount_point: &str) -> Option<(u64, u64, u64, u64, bool)> {
     let path = std::ffi::CString::new(mount_point).ok()?;
     let mut s: libc::statvfs = unsafe { std::mem::zeroed() };
@@ -44,8 +47,8 @@ fn stat_mount(mount_point: &str) -> Option<(u64, u64, u64, u64, bool)> {
     }
     let read_only = (s.f_flag & libc::ST_RDONLY) != 0;
     Some((
-        s.f_blocks as u64 * s.f_frsize as u64,
-        s.f_bavail as u64 * s.f_frsize as u64,
+        (s.f_blocks as u64).saturating_mul(s.f_frsize as u64),
+        (s.f_bavail as u64).saturating_mul(s.f_frsize as u64),
         s.f_files as u64,
         s.f_ffree as u64,
         read_only,

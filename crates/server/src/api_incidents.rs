@@ -74,11 +74,24 @@ pub async fn set_status_route(
     };
     match incidents::set_status(&state.pool, &id, status).await {
         Ok(true) => Json(json!({ "ok": true })).into_response(),
-        Ok(false) => (
-            StatusCode::NOT_FOUND,
-            Json(json!({ "error": "incident not found" })),
-        )
-            .into_response(),
+        Ok(false) => match incidents::fetch_incident(&state.pool, &id).await {
+            Ok(Some(inc)) => (
+                StatusCode::CONFLICT,
+                Json(json!({
+                    "error": format!(
+                        "cannot {} an incident that is {:?}",
+                        action, inc.status
+                    )
+                    .to_lowercase(),
+                })),
+            )
+                .into_response(),
+            _ => (
+                StatusCode::NOT_FOUND,
+                Json(json!({ "error": "incident not found" })),
+            )
+                .into_response(),
+        },
         Err(e) => {
             eprintln!("set status failed: {e}");
             (
@@ -244,6 +257,54 @@ mod tests {
         let json = get_json(&app, &format!("/v1/incidents/{}", id)).await;
         assert_eq!(json["status"], "resolved");
         assert!(json["resolved_at"].is_number());
+    }
+
+    #[tokio::test]
+    async fn resolved_incident_is_final() {
+        let state = AppState::for_tests().await;
+        let id = seed_incident(&state).await;
+        let app = build_app(state).await;
+        let post = |path: String| {
+            let app = app.clone();
+            async move {
+                app.oneshot(
+                    Request::builder()
+                        .method("POST")
+                        .uri(path)
+                        .header("authorization", "Bearer test-token")
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap()
+                .status()
+            }
+        };
+        assert_eq!(
+            post(format!("/v1/incidents/{}/resolve", id)).await,
+            StatusCode::OK
+        );
+        let resolved_at =
+            get_json(&app, &format!("/v1/incidents/{}", id)).await["resolved_at"].clone();
+        assert_eq!(
+            post(format!("/v1/incidents/{}/ack", id)).await,
+            StatusCode::CONFLICT,
+            "ack must not re-open a resolved incident"
+        );
+        assert_eq!(
+            post(format!("/v1/incidents/{}/resolve", id)).await,
+            StatusCode::CONFLICT
+        );
+        let json = get_json(&app, &format!("/v1/incidents/{}", id)).await;
+        assert_eq!(json["status"], "resolved");
+        assert_eq!(
+            json["resolved_at"], resolved_at,
+            "cooldown anchor unchanged"
+        );
+        assert_eq!(
+            post("/v1/incidents/nope/ack".into()).await,
+            StatusCode::NOT_FOUND
+        );
     }
 
     #[tokio::test]

@@ -10,16 +10,21 @@ use crate::notify::NotifyConfig;
 pub const NOTIFY_QUEUE_CAP: usize = 64;
 
 /// Consume incidents forever. `delivered` counts fully-delivered incidents
-/// (test hook; production passes a dummy).
+/// (test hook; production passes a dummy). `pool` persists a Telegram chat
+/// discovered while sending (None in tests).
 pub async fn notify_loop(
     mut rx: tokio::sync::mpsc::Receiver<serde_json::Value>,
     cfg: NotifyConfig,
     ui_base_url: String,
     queue: std::sync::Arc<std::sync::Mutex<crate::notify::RetryQueue>>,
     delivered: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    pool: Option<sqlx::AnyPool>,
 ) {
     while let Some(incident) = rx.recv().await {
         let failed = crate::notify::notify_incident(&cfg, &incident, &ui_base_url).await;
+        if let (Some(pool), Some(client)) = (&pool, crate::notify::configured_telegram(&cfg)) {
+            crate::notify::persist_telegram_chat(pool, client).await;
+        }
         if failed.is_empty() {
             delivered.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         }
@@ -33,10 +38,19 @@ pub fn spawn_notifier(state: AppState, rx: tokio::sync::mpsc::Receiver<serde_jso
     let cfg = state.notify.clone();
     let ui = state.ui_base_url.clone();
     let queue = state.notify_queue.clone();
+    let pool = state.pool.clone();
     tokio::spawn(async move {
         // NOT supervised: the channel is single-use; a supervised restart
         // could not re-bind the receiver. The loop exits only on shutdown.
-        notify_loop(rx, cfg, ui, queue, std::sync::Arc::new(Default::default())).await;
+        notify_loop(
+            rx,
+            cfg,
+            ui,
+            queue,
+            std::sync::Arc::new(Default::default()),
+            Some(pool),
+        )
+        .await;
     });
 }
 
@@ -90,6 +104,7 @@ mod tests {
                 "http://ui".to_string(),
                 Arc::new(Default::default()),
                 d2,
+                None,
             )
             .await;
         });

@@ -5,7 +5,10 @@ const KINDS = ["Reboot", "ServiceFailed", "ServiceCrashLoop", "DiskHigh", "Inode
                "SudoUsed", "FileChanged", "NewListeningPort", "NewOutboundConnection",
                "ConnectionRateSpike", "ServiceRestarted", "AgentHeartbeatMissing",
                "AgentQueueGrowing", "ErrorRateSpike", "ContainerStopped",
-               "ContainerCrashLoop", "CertExpiring"];
+               "ContainerCrashLoop", "CertExpiring", "PortScanSpike", "OomKill",
+               "KernelPanic", "FsReadOnly", "ClockChange", "RequestRateSpike",
+               "NewUser", "PackageInstalled", "PersistenceChanged", "SuspiciousExec",
+               "UnexpectedExec", "AppException"];
 let token = localStorage.getItem(TOKEN_KEY) || "";
 
 const $ = (id) => document.getElementById(id);
@@ -102,7 +105,11 @@ async function route() {
   try {
     if (r.view === "incidents") await loadIncidents();
     else if (r.view === "incident") await loadIncidentDetail(r.id);
-    else await loadEvents();
+    else {
+      const events = await loadEvents();
+      if (events) render(events);
+    }
+    clearError();
   } catch (e) {
     $("err").style.display = "block";
     $("err").textContent = "load failed: " + e.message;
@@ -163,6 +170,11 @@ function render(events) {
   }
 }
 
+function clearError() {
+  $("err").style.display = "none";
+  $("err").textContent = "";
+}
+
 function escapeHtml(s) {
   return String(s).replace(/[&<>"']/g, c => ({
     "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;",
@@ -179,7 +191,9 @@ function init() {
   fKind.addEventListener("change", refresh);
   $("f-sev").addEventListener("change", refresh);
   setInterval(refresh, 5000);
-  setInterval(() => { if (hashRoute().view === "incidents") loadIncidents(); }, 5000);
+  setInterval(() => {
+    if (hashRoute().view === "incidents") loadIncidents().then(clearError, () => {});
+  }, 5000);
   window.addEventListener("hashchange", route);
   route();
 }
@@ -191,6 +205,7 @@ async function refresh() {
     const events = await loadEvents();
     if (!events) return; // 401 re-prompt path; next poll retries
     render(events);
+    clearError();
     status.textContent = "updated " + fmt(Date.now());
   } catch (e) {
     const err = document.getElementById("err");

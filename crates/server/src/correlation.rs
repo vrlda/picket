@@ -414,7 +414,12 @@ pub async fn scan_and_absorb(
     let mut seen: std::collections::HashSet<String> = Default::default();
     // shared across hosts: the multi-host pass claims events FIRST so the
     // per-host rule pass can't double-fire on the same unreachables
-    let mut matched_event_ids: std::collections::HashSet<String> = Default::default();
+    // Events that belong to an already-RESOLVED incident are settled: they
+    // must never match again (one event, one incident). Without this, a
+    // resolved incident whose events are still inside the scan range
+    // re-opens as soon as its cooldown lapses — immediately for
+    // app_exception (cooldown 0) — and re-notifies about old news.
+    let mut matched_event_ids = resolved_event_ids(pool, since).await?;
     let fallback_cooldown = rules
         .iter()
         .find(|r| r.is_fallback)
@@ -565,6 +570,24 @@ pub async fn scan_and_absorb(
     Ok(changed)
 }
 
+/// Ids of events at/after `since_ms` already linked to a resolved incident.
+async fn resolved_event_ids(
+    pool: &sqlx::AnyPool,
+    since_ms: i64,
+) -> Result<std::collections::HashSet<String>, sqlx::Error> {
+    let rows = sqlx::query_as::<_, (String,)>(
+        "SELECT ie.event_id
+         FROM incident_events ie
+         JOIN incidents i ON i.id = ie.incident_id
+         JOIN events e ON e.id = ie.event_id
+         WHERE i.status = 'resolved' AND e.ts >= $1",
+    )
+    .bind(since_ms)
+    .fetch_all(pool)
+    .await?;
+    Ok(rows.into_iter().map(|(id,)| id).collect())
+}
+
 /// True when a resolved incident with this key was resolved less than
 /// `cooldown_ms` ago.
 pub async fn recently_resolved(
@@ -602,6 +625,13 @@ impl NotifyThrottle {
     }
 
     pub fn allow(&mut self, incident_id: &str, ts: i64) -> bool {
+        // Entries older than the window would be allowed anyway — dropping
+        // them is behavior-neutral and keeps the map from growing by one
+        // entry per incident for the life of the process.
+        if self.last.len() >= 1024 {
+            let window = self.window_ms;
+            self.last.retain(|_, t| ts.saturating_sub(*t) < window);
+        }
         let last = self.last.entry(incident_id.to_string()).or_insert(i64::MIN);
         if ts.saturating_sub(*last) >= self.window_ms {
             *last = ts;
@@ -1305,6 +1335,16 @@ actions = ["Review the change to the affected file", "Roll back the latest confi
     }
 
     #[test]
+    fn notify_throttle_prunes_expired_entries() {
+        let mut t = NotifyThrottle::new(60);
+        for i in 0..2000 {
+            assert!(t.allow(&format!("inc-{i}"), i * 1_000));
+        }
+        assert!(t.last.len() <= 1024, "expired entries pruned");
+        assert!(!t.allow("inc-1999", 1_999_000 + 1), "live entry kept");
+    }
+
+    #[test]
     fn m5_kinds_flow_to_incidents() {
         let rules = default_rules();
         let cfg_rule = rules
@@ -1406,6 +1446,82 @@ actions = ["Review the change to the affected file", "Roll back the latest confi
         assert_eq!(changed[0].key, format!("rule:app_exception:ex:api:{}", fp));
         assert_eq!(changed[0].severity, "Critical");
         assert_eq!(changed[0].timeline.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn resolved_incident_events_never_reopen_it() {
+        // app_exception has cooldown 0: before the fix, the resolved
+        // incident's own events (still inside the window) re-matched on the
+        // next scan and re-opened (and re-notified) it within seconds.
+        let p = pool().await;
+        let fp = crate::errors::fingerprint("api", "ValueError", &[("app.py".into(), 42)]);
+        let key = format!("ex:api:{}", fp);
+        let x1 = ev(
+            "x-1",
+            1_000,
+            EventKind::AppException,
+            Severity::Critical,
+            &key,
+        );
+        crate::ingest::store_events(&p, &[x1]).await.unwrap();
+        let changed = scan_and_absorb(&p, &default_rules(), 10_000).await.unwrap();
+        assert_eq!(changed.len(), 1);
+        crate::incidents::set_status_at(
+            &p,
+            &changed[0].id,
+            crate::incidents::IncidentStatus::Resolved,
+            11_000,
+        )
+        .await
+        .unwrap();
+        let changed = scan_and_absorb(&p, &default_rules(), 20_000).await.unwrap();
+        assert!(changed.is_empty(), "resolved events stay resolved");
+        // a NEW occurrence of the same bug opens a fresh incident
+        let x2 = ev(
+            "x-2",
+            21_000,
+            EventKind::AppException,
+            Severity::Critical,
+            &key,
+        );
+        crate::ingest::store_events(&p, &[x2]).await.unwrap();
+        let changed = scan_and_absorb(&p, &default_rules(), 30_000).await.unwrap();
+        assert_eq!(changed.len(), 1);
+        assert_eq!(changed[0].timeline.len(), 1, "only the new event");
+        assert_eq!(changed[0].timeline[0].id, "x-2");
+    }
+
+    #[tokio::test]
+    async fn resolved_fallback_events_do_not_reopen_after_cooldown() {
+        let p = pool().await;
+        // a custom rule with a long window widens the scan range past the
+        // fallback cooldown (300s)
+        let mut rules = default_rules();
+        let mut long = rules[0].clone();
+        long.id = "long_window".into();
+        long.window_secs = 3600;
+        rules.push(long);
+        let e = ev(
+            "d-1",
+            1_000_000,
+            EventKind::DiskHigh,
+            Severity::Warning,
+            "disk:/",
+        );
+        crate::ingest::store_events(&p, &[e]).await.unwrap();
+        let changed = scan_and_absorb(&p, &rules, 1_010_000).await.unwrap();
+        assert_eq!(changed.len(), 1);
+        crate::incidents::set_status_at(
+            &p,
+            &changed[0].id,
+            crate::incidents::IncidentStatus::Resolved,
+            1_020_000,
+        )
+        .await
+        .unwrap();
+        // 20 minutes later: past the cooldown, event still inside the range
+        let changed = scan_and_absorb(&p, &rules, 2_220_000).await.unwrap();
+        assert!(changed.is_empty(), "old event must not open a new incident");
     }
 
     #[tokio::test]

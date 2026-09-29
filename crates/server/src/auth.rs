@@ -17,13 +17,20 @@ pub struct Auth {
 /// Resolve the presenter's host_id: shared token → None (payload decides);
 /// a per-host token → Some(host_id).
 pub fn resolve_host_id(auth: &Auth, bearer: &str) -> Option<String> {
-    if bearer == auth.shared {
+    if token_eq(bearer, &auth.shared) {
         return None;
     }
     auth.hosts
         .iter()
-        .find(|(_, t)| *t == bearer)
+        .find(|(_, t)| token_eq(bearer, t))
         .map(|(h, _)| h.clone())
+}
+
+/// Constant-time token comparison (a plain `==` short-circuits on the first
+/// differing byte, leaking how much of a guess was right). An empty
+/// configured token never matches.
+fn token_eq(presented: &str, configured: &str) -> bool {
+    !configured.is_empty() && crate::notify::constant_time_eq(presented, configured)
 }
 
 /// True only for the configured shared token or one of the configured
@@ -31,7 +38,7 @@ pub fn resolve_host_id(auth: &Auth, bearer: &str) -> Option<String> {
 /// either the shared token or an unknown token, so callers must not use it
 /// as an authentication decision by itself.
 fn is_authorized(auth: &Auth, bearer: &str, resolved_host: &Option<String>) -> bool {
-    bearer == auth.shared || resolved_host.is_some()
+    token_eq(bearer, &auth.shared) || resolved_host.is_some()
 }
 
 /// Host identity resolved from the bearer token (None = shared token).

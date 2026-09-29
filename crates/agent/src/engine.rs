@@ -28,6 +28,9 @@ impl SpikeDetector {
     }
 
     pub fn push(&mut self, v: f64) {
+        if !v.is_finite() {
+            return; // never let a NaN/inf sample poison the baseline
+        }
         if self.samples.len() >= self.window {
             self.samples.pop_front();
         }
@@ -36,7 +39,8 @@ impl SpikeDetector {
 
     fn median(&self) -> f64 {
         let mut v: Vec<f64> = self.samples.iter().copied().collect();
-        v.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        // total_cmp: a NaN sample (e.g. a 0/0 ratio) must not panic the agent
+        v.sort_by(|a, b| a.total_cmp(b));
         let n = v.len();
         if n == 0 {
             return 0.0;
