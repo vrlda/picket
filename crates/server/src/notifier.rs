@@ -6,7 +6,7 @@ use crate::app::AppState;
 use crate::notify::NotifyConfig;
 
 /// Bounded queue: on overflow the runner drops loudly (incidents remain in
-/// the UI; notifications are best-effort under load).
+/// the API; notifications are best-effort under load).
 pub const NOTIFY_QUEUE_CAP: usize = 64;
 
 /// Consume incidents forever. `delivered` counts fully-delivered incidents
@@ -15,13 +15,12 @@ pub const NOTIFY_QUEUE_CAP: usize = 64;
 pub async fn notify_loop(
     mut rx: tokio::sync::mpsc::Receiver<serde_json::Value>,
     cfg: NotifyConfig,
-    ui_base_url: String,
     queue: std::sync::Arc<std::sync::Mutex<crate::notify::RetryQueue>>,
     delivered: std::sync::Arc<std::sync::atomic::AtomicUsize>,
     pool: Option<sqlx::AnyPool>,
 ) {
     while let Some(incident) = rx.recv().await {
-        let failed = crate::notify::notify_incident(&cfg, &incident, &ui_base_url).await;
+        let failed = crate::notify::notify_incident(&cfg, &incident).await;
         if let (Some(pool), Some(client)) = (&pool, crate::notify::configured_telegram(&cfg)) {
             crate::notify::persist_telegram_chat(pool, client).await;
         }
@@ -36,7 +35,6 @@ pub async fn notify_loop(
 
 pub fn spawn_notifier(state: AppState, rx: tokio::sync::mpsc::Receiver<serde_json::Value>) {
     let cfg = state.notify.clone();
-    let ui = state.ui_base_url.clone();
     let queue = state.notify_queue.clone();
     let pool = state.pool.clone();
     tokio::spawn(async move {
@@ -45,7 +43,6 @@ pub fn spawn_notifier(state: AppState, rx: tokio::sync::mpsc::Receiver<serde_jso
         notify_loop(
             rx,
             cfg,
-            ui,
             queue,
             std::sync::Arc::new(Default::default()),
             Some(pool),
@@ -98,15 +95,7 @@ mod tests {
         let delivered = Arc::new(AtomicUsize::new(0));
         let d2 = delivered.clone();
         let task = tokio::spawn(async move {
-            notify_loop(
-                rx,
-                cfg,
-                "http://ui".to_string(),
-                Arc::new(Default::default()),
-                d2,
-                None,
-            )
-            .await;
+            notify_loop(rx, cfg, Arc::new(Default::default()), d2, None).await;
         });
         tx.send(serde_json::json!({
             "severity": "Critical",

@@ -1293,7 +1293,6 @@ actions = ["Review the change to the affected file", "Roll back the latest confi
         ];
         crate::ingest::store_events(&pool, &events).await.unwrap();
         let cfg = crate::config::ServerConfig {
-            ui_base_url: "http://ui".into(),
             notify: crate::notify::NotifyConfig {
                 webhook_url: format!("http://{}", addr),
                 slack_url: String::new(),
@@ -1317,7 +1316,7 @@ actions = ["Review the change to the affected file", "Roll back the latest confi
             .unwrap()
             .unwrap();
         let json = crate::api_incidents::incident_json(&inc);
-        let failed = crate::notify::notify_incident(&cfg.notify, &json, &cfg.ui_base_url).await;
+        let failed = crate::notify::notify_incident(&cfg.notify, &json).await;
         assert!(failed.is_empty(), "delivery succeeded");
         let req = handle.join().unwrap();
         assert!(req.contains("watchtower.incident"));

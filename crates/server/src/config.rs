@@ -24,7 +24,6 @@ struct ServerConfigToml {
     rule: Vec<crate::correlation::Rule>,
     rules: Option<Vec<crate::correlation::Rule>>,
     notify: Option<crate::notify::NotifyConfig>,
-    ui_base_url: Option<String>,
     watchdog_heartbeat_grace_secs: Option<i64>,
     watchdog_queue_threshold: Option<i64>,
 }
@@ -48,7 +47,6 @@ impl From<ServerConfigToml> for ServerConfig {
                 .unwrap_or(defaults.notify_min_interval_secs),
             rules,
             notify: t.notify.unwrap_or(defaults.notify),
-            ui_base_url: t.ui_base_url.unwrap_or(defaults.ui_base_url),
             watchdog_heartbeat_grace_secs: t
                 .watchdog_heartbeat_grace_secs
                 .unwrap_or(defaults.watchdog_heartbeat_grace_secs),
@@ -63,8 +61,8 @@ impl From<ServerConfigToml> for ServerConfig {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(from = "ServerConfigToml")]
 pub struct ServerConfig {
-    /// Socket address to listen on. Default localhost only — the UI has no
-    /// auth in M2, so do not expose it to the network.
+    /// Socket address to listen on (agent ingest + API). Default localhost
+    /// only; expose it through an HTTPS reverse proxy for remote agents.
     pub listen: String,
     /// sqlx database URL. "sqlite::memory:" works only for tests.
     pub db_url: String,
@@ -90,9 +88,6 @@ pub struct ServerConfig {
     /// Notification channels and per-severity routing.
     #[serde(default)]
     pub notify: crate::notify::NotifyConfig,
-    /// UI base URL for links in notifications.
-    #[serde(default)]
-    pub ui_base_url: String,
     /// Seconds a host may go without a heartbeat before the watchdog fires.
     #[serde(default = "default_heartbeat_grace")]
     pub watchdog_heartbeat_grace_secs: i64,
@@ -129,7 +124,6 @@ impl Default for ServerConfig {
             notify_min_interval_secs: default_notify_min_interval(),
             rules: Vec::new(),
             notify: crate::notify::NotifyConfig::default(),
-            ui_base_url: "http://127.0.0.1:8787".into(),
             watchdog_heartbeat_grace_secs: default_heartbeat_grace(),
             watchdog_queue_threshold: default_queue_threshold(),
         }
@@ -193,6 +187,14 @@ mod tests {
         assert_eq!(cfg.listen, "0.0.0.0:9999");
         assert_eq!(cfg.auth_token, "tok");
         assert!(cfg.db_url.contains("watchtower.db"));
+    }
+
+    #[test]
+    fn legacy_ui_base_url_is_ignored() {
+        // configs written for the removed web UI must keep loading
+        let raw = "auth_token = \"tok\"\nui_base_url = \"http://x\"\n";
+        let cfg: ServerConfig = toml::from_str(raw).unwrap();
+        assert_eq!(cfg.auth_token, "tok");
     }
 
     #[test]

@@ -5,7 +5,8 @@
 - `watchtower-agent`: health/resource/systemd/ssh-auth/file-integrity/netflow/
   reboot/error-rate/docker/TLS sensors; local detection; telemetry with spool.
 - `watchtower-server`: ingest, hosts, events, incidents + correlation,
-  webhook/Slack notifications, watchdog, timeline UI.
+  Telegram (with Acknowledge/Resolve buttons)/webhook/Slack notifications,
+  watchdog. Headless — no web UI.
 - `scripts/install.sh`: agent install (user, unit, config, discovery checklist).
 - `scripts/release.sh`: release tarballs + SHA256SUMS.
 
@@ -33,19 +34,21 @@ no capabilities). Hosts self-register on the first heartbeat.
     chown watchtower:watchtower /etc/watchtower/server.toml
 
     install -m 0755 watchtower-server /usr/local/bin/watchtower-server
-    cp -R static /usr/local/bin/static
     cp watchtower-server.service /etc/systemd/system/
     systemctl daemon-reload && systemctl enable --now watchtower-server
 
-    # optional: Telegram notifications (token from the environment)
-    TELEGRAM_BOT_TOKEN=<bot token> watchtower-server --config server.toml
-    # multi-server: same token on every server; pin the chat for determinism
-    TELEGRAM_BOT_TOKEN=<token> TELEGRAM_CHAT_ID=<chat-id> watchtower-server ...
-    # optional: require a password before a chat can register
-    TELEGRAM_BOT_PASSWORD=<secret> watchtower-server --config server.toml
+    # Telegram alerts: the unit reads /etc/watchtower/server.env
+    cat > /etc/watchtower/server.env <<EOF
+    TELEGRAM_BOT_TOKEN=<bot token>
+    TELEGRAM_BOT_PASSWORD=<secret>   # or TELEGRAM_CHAT_ID=<chat id>
+    EOF
+    chmod 0600 /etc/watchtower/server.env
+    systemctl restart watchtower-server
 
-The UI serves at http://127.0.0.1:8787/ (token prompt on first load).
-Expose the listener only where the UI + agents can reach it (default localhost).
+The server is headless: alerts go to Telegram/Slack/webhook, and incidents are
+acknowledged/resolved from the Telegram buttons or the API. Expose the
+listener only where agents can reach it (default localhost; HTTPS reverse
+proxy for remote agents).
 
 ## Verification
 

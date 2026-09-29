@@ -14,8 +14,6 @@ for target in $TARGETS; do
   echo "==> building $target"
   (cd "$ROOT" && cargo build --release --target "$target" -p watchtower-agent -p watchtower-server)
   TARBALL="$DIST/watchtower-$VERSION-$target.tar.gz"
-  mkdir -p "$ROOT/target/$target/release/static"
-  cp -R "$ROOT/crates/server/static/." "$ROOT/target/$target/release/static/"
   cat > "$ROOT/target/$target/release/watchtower-server.service" <<UNIT
 [Unit]
 Description=Watchtower control plane
@@ -25,7 +23,8 @@ Wants=network-online.target
 [Service]
 User=watchtower
 Group=watchtower
-Environment=WATCHTOWER_UI_DIR=/usr/local/bin/static
+# TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID / TELEGRAM_BOT_PASSWORD (optional file)
+EnvironmentFile=-/etc/watchtower/server.env
 ExecStart=/usr/local/bin/watchtower-server
 Restart=always
 RestartSec=5
@@ -39,7 +38,7 @@ CapabilityBoundingSet=
 [Install]
 WantedBy=multi-user.target
 UNIT
-  tar -C "$ROOT/target/$target/release" -czf "$TARBALL" watchtower-agent watchtower-server static watchtower-server.service
+  tar -C "$ROOT/target/$target/release" -czf "$TARBALL" watchtower-agent watchtower-server watchtower-server.service
   echo "built $TARBALL"
 done
 
