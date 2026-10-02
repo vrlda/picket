@@ -13,6 +13,7 @@ toml = "0.8"
 clap = { version = "4", features = ["derive"] }
 ureq = { version = "2", features = ["tls", "json"] }
 uuid = { version = "1", features = ["v4"] }
+sha2 = "0.10"
 wt-common = { path = "../wt-common" }
 
 [dev-dependencies]

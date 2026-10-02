@@ -30,6 +30,7 @@ async fn main() {
     watchtower_server::correlation::spawn_runner(state.clone());
     watchtower_server::watchdog::spawn_watchdog(state.clone());
     watchtower_server::notify::spawn_retry_loop(state.clone());
+    watchtower_server::agent_tasks::spawn_sweeper(state.clone());
     tokio::spawn(watchtower_server::notify::start_telegram(state.clone()));
     if let Some(rx) = state.notify_rx.take() {
         watchtower_server::notifier::spawn_notifier(state.clone(), rx);

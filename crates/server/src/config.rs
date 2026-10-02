@@ -26,6 +26,23 @@ struct ServerConfigToml {
     notify: Option<crate::notify::NotifyConfig>,
     watchdog_heartbeat_grace_secs: Option<i64>,
     watchdog_queue_threshold: Option<i64>,
+    #[serde(default)]
+    event_sources: HashMap<String, EventSourceConfig>,
+    #[serde(default)]
+    runners: HashMap<String, crate::dispatch::RunnerConfig>,
+    #[serde(default)]
+    agent_profiles: HashMap<String, crate::dispatch::AgentProfile>,
+}
+
+/// `[event_sources.<name>]`: an application allowed to post events with its
+/// own token. `source` defaults to the table name; a non-empty
+/// `environment` overrides the payload's.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct EventSourceConfig {
+    pub token: String,
+    pub source: String,
+    pub environment: String,
 }
 
 impl From<ServerConfigToml> for ServerConfig {
@@ -53,6 +70,9 @@ impl From<ServerConfigToml> for ServerConfig {
             watchdog_queue_threshold: t
                 .watchdog_queue_threshold
                 .unwrap_or(defaults.watchdog_queue_threshold),
+            event_sources: t.event_sources,
+            runners: t.runners,
+            agent_profiles: t.agent_profiles,
         }
     }
 }
@@ -94,6 +114,15 @@ pub struct ServerConfig {
     /// Spool queue length that triggers AgentQueueGrowing.
     #[serde(default = "default_queue_threshold")]
     pub watchdog_queue_threshold: i64,
+    /// Applications with their own event tokens (anti-spoofing).
+    #[serde(default)]
+    pub event_sources: HashMap<String, EventSourceConfig>,
+    /// Agent runners allowed to connect, by runner id.
+    #[serde(default)]
+    pub runners: HashMap<String, crate::dispatch::RunnerConfig>,
+    /// Agent profiles referenced by `[[rule.dispatch]] type = "agent"`.
+    #[serde(default)]
+    pub agent_profiles: HashMap<String, crate::dispatch::AgentProfile>,
 }
 
 fn default_heartbeat_grace() -> i64 {
@@ -126,6 +155,9 @@ impl Default for ServerConfig {
             notify: crate::notify::NotifyConfig::default(),
             watchdog_heartbeat_grace_secs: default_heartbeat_grace(),
             watchdog_queue_threshold: default_queue_threshold(),
+            event_sources: HashMap::new(),
+            runners: HashMap::new(),
+            agent_profiles: HashMap::new(),
         }
     }
 }

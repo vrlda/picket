@@ -417,7 +417,8 @@ pub struct IncidentDraft {
 pub fn fallback_incidents(events: &[AgentEvent], _now: i64, host: &str) -> Vec<IncidentDraft> {
     let mut out = Vec::new();
     for e in events {
-        if e.severity == Severity::Info {
+        // custom (application) kinds become incidents only through rules
+        if e.severity == Severity::Info || e.kind.is_custom() {
             continue;
         }
         let kind = crate::ingest::kind_wire(&e.kind);
@@ -461,6 +462,7 @@ pub async fn scan_and_absorb(
     let max_window = rules.iter().map(|r| r.window_secs).max().unwrap_or(300) * 1000;
     let since = now - max_window;
     let events = crate::events::fetch_events_simple(pool, since).await?;
+    let all_events = events.clone();
     let mut by_host: std::collections::HashMap<String, Vec<AgentEvent>> = Default::default();
     for e in events {
         by_host.entry(e.host_id.clone()).or_default().push(e);
@@ -474,7 +476,8 @@ pub async fn scan_and_absorb(
     // resolved incident whose events are still inside the scan range
     // re-opens as soon as its cooldown lapses — immediately for
     // app_exception (cooldown 0) — and re-notifies about old news.
-    let mut matched_event_ids = resolved_event_ids(pool, since).await?;
+    let resolved = resolved_event_ids(pool, since).await?;
+    let mut matched_event_ids = resolved.clone();
     let fallback_cooldown = rules
         .iter()
         .find(|r| r.is_fallback)
@@ -502,6 +505,7 @@ pub async fn scan_and_absorb(
                 &draft.affected,
             )
             .await?;
+            incidents::set_rule_id(pool, &inc.id, "multi_host_outage").await?;
             let new_links = incidents::link_events(pool, &inc.id, &draft.events).await?;
             if new_links > 0 {
                 incidents::touch_incident(pool, &inc.id).await?;
@@ -513,10 +517,31 @@ pub async fn scan_and_absorb(
         }
     }
 
+    // threshold rules (custom events, count/group_by/where) run across
+    // hosts. They only skip settled (resolved) events — two threshold rules
+    // may count the same event — but claim what they match so the fallback
+    // pass leaves it alone.
+    for rule in rules.iter().filter(|r| !r.is_fallback && r.is_threshold()) {
+        for inc in threshold_rule(
+            pool,
+            rule,
+            &all_events,
+            now,
+            &resolved,
+            &mut matched_event_ids,
+        )
+        .await?
+        {
+            if seen.insert(inc.id.clone()) {
+                changed.push(inc);
+            }
+        }
+    }
+
     for (host, host_events) in by_host {
         // rule pass (declared order; earlier rules claim events first)
         for rule in rules {
-            if rule.is_fallback {
+            if rule.is_fallback || rule.is_threshold() {
                 continue;
             }
             // while-let: app_exception matches ONCE PER FINGERPRINT (the
@@ -544,6 +569,7 @@ pub async fn scan_and_absorb(
                     &draft.affected,
                 )
                 .await?;
+                incidents::set_rule_id(pool, &inc.id, &rule.id).await?;
                 let new_links = incidents::link_events(pool, &inc.id, &draft.events).await?;
                 if new_links > 0 {
                     incidents::touch_incident(pool, &inc.id).await?;
@@ -614,11 +640,107 @@ pub async fn scan_and_absorb(
                     &draft.affected,
                 )
                 .await?;
+                incidents::set_rule_id(pool, &inc.id, "fallback").await?;
                 incidents::link_events(pool, &inc.id, &draft.events).await?;
                 let inc = incidents::fetch_incident(pool, &inc.id).await?.unwrap();
                 if seen.insert(inc.id.clone()) {
                     changed.push(inc);
                 }
+            }
+        }
+    }
+    Ok(changed)
+}
+
+/// One threshold rule over all scanned events: matching trigger events in
+/// the window, grouped by `group_by`; a group with at least `count` events
+/// opens (or a group with an open incident absorbs into) the incident
+/// `rule:<id>:<group>`. Returns incidents that gained events.
+async fn threshold_rule(
+    pool: &sqlx::AnyPool,
+    rule: &Rule,
+    events: &[AgentEvent],
+    now: i64,
+    resolved: &std::collections::HashSet<String>,
+    matched: &mut std::collections::HashSet<String>,
+) -> Result<Vec<Incident>, sqlx::Error> {
+    let window_start = now - rule.window_secs * 1000;
+    let mut groups: std::collections::BTreeMap<String, Vec<&AgentEvent>> = Default::default();
+    for e in events {
+        if e.kind != rule.trigger
+            || e.ts < window_start
+            || e.ts > now
+            || resolved.contains(&e.id)
+            || !rule.conditions.iter().all(|c| c.matches(e))
+        {
+            continue;
+        }
+        groups
+            .entry(crate::rules::group_key(e, &rule.group_by))
+            .or_default()
+            .push(e);
+    }
+    let mut changed = Vec::new();
+    for (group, evs) in groups {
+        let key = if group.is_empty() {
+            format!("rule:{}", rule.id)
+        } else {
+            format!("rule:{}:{}", rule.id, group)
+        };
+        let open = incidents::find_open_by_key(pool, &key).await?;
+        if evs.len() < rule.count.max(1) as usize && open.is_none() {
+            continue; // below threshold, nothing to absorb into
+        }
+        for e in &evs {
+            matched.insert(e.id.clone());
+        }
+        if open.is_none() && recently_resolved(pool, &key, now, rule.cooldown_secs * 1000).await? {
+            continue;
+        }
+        let latest = evs.last().expect("non-empty group");
+        let worst = evs
+            .iter()
+            .map(|e| e.severity)
+            .max()
+            .unwrap_or(rule.severity);
+        let severity = crate::ingest::severity_wire(worst.max(rule.severity));
+        let fill = |tpl: &str| {
+            crate::rules::fill(tpl, latest, evs.len())
+                .replace("{window}", &rule.window_secs.to_string())
+        };
+        let mut affected: Vec<String> = Vec::new();
+        for e in &evs {
+            if !e.subject.is_empty() && !affected.contains(&e.subject) {
+                affected.push(e.subject.clone());
+            }
+        }
+        if affected.is_empty() && !group.is_empty() {
+            affected = group.split(',').map(String::from).collect();
+        }
+        let host = &evs[0].host_id;
+        let host_id = if evs.iter().all(|e| &e.host_id == host) {
+            host.clone()
+        } else {
+            String::new()
+        };
+        let inc = incidents::create_incident(
+            pool,
+            &key,
+            &host_id,
+            &severity,
+            &fill(&rule.headline),
+            &fill(&rule.cause),
+            &rule.actions,
+            &affected,
+        )
+        .await?;
+        incidents::set_rule_id(pool, &inc.id, &rule.id).await?;
+        let owned: Vec<AgentEvent> = evs.iter().map(|e| (*e).clone()).collect();
+        if incidents::link_events(pool, &inc.id, &owned).await? > 0 {
+            incidents::touch_incident(pool, &inc.id).await?;
+            incidents::raise_severity(pool, &inc.id, &severity).await?;
+            if let Some(inc) = incidents::fetch_incident(pool, &inc.id).await? {
+                changed.push(inc);
             }
         }
     }
@@ -719,11 +841,33 @@ async fn scan_loop(state: crate::app::AppState) {
                     continue;
                 }
                 for inc in &changed {
-                    if !throttle.allow(&inc.id, now) {
+                    // dispatch first so the notification can say an agent
+                    // took it; new dispatch news bypasses the throttle
+                    let dispatch = crate::agent_tasks::dispatch_for_incident(&state, inc).await;
+                    let news = dispatch.as_ref().is_some_and(|(_, new)| *new);
+                    if !throttle.allow(&inc.id, now) && !news {
                         continue;
                     }
                     eprintln!("incident {}: {} [{}]", inc.id, inc.headline, inc.severity);
-                    let json = crate::api_incidents::incident_json(inc);
+                    let mut json = crate::api_incidents::incident_json(inc);
+                    let actions = state
+                        .rules
+                        .iter()
+                        .find(|r| r.id == inc.rule_id)
+                        .map(|r| r.dispatch.clone())
+                        .unwrap_or_default();
+                    let channels = crate::dispatch::channels_for_moment(
+                        &actions,
+                        &crate::notify::channels_for(&state.notify, &inc.severity),
+                        crate::dispatch::Moment::Incident,
+                    );
+                    if channels.is_empty() {
+                        continue;
+                    }
+                    json["_channels"] = serde_json::json!(channels);
+                    if let Some((text, _)) = dispatch {
+                        json["_notice"] = serde_json::json!({ "moment": "incident", "text": text });
+                    }
                     if let Err(e) = state.notify_tx.try_send(json) {
                         match e {
                             tokio::sync::mpsc::error::TrySendError::Full(_) => {
