@@ -124,6 +124,7 @@ pub async fn handle_errors(
         payload.service,
         fingerprint(&payload.service, &payload.exception.kind, &frame_pairs)
     );
+    let fp = key.rsplit(':').next().unwrap_or("").to_string();
     let severity = severity_for(&payload.exception.level);
     let trace = payload
         .exception
@@ -177,6 +178,20 @@ pub async fn handle_errors(
                 ),
             },
         ],
+        // structured context, so rules can group/filter exceptions like
+        // any custom event (group_by = ["service"], ...)
+        source: payload.service.clone(),
+        environment: payload.environment.clone(),
+        attributes: {
+            let mut a = serde_json::Map::new();
+            a.insert(
+                "exception_type".into(),
+                payload.exception.kind.clone().into(),
+            );
+            a.insert("level".into(), payload.exception.level.clone().into());
+            a.insert("fingerprint".into(), fp.into());
+            a
+        },
         ..Default::default()
     };
     crate::ingest::store_events(&state.pool, &[ev])

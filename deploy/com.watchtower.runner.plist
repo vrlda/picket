@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- macOS: keep watchtower-runner running on an always-on Mac.
+     Install: cp deploy/com.watchtower.runner.plist ~/Library/LaunchAgents/
+              launchctl load ~/Library/LaunchAgents/com.watchtower.runner.plist
+     Runs as you (a LaunchAgent), so it uses your git and `claude` login.
+     Edit the paths below (HOME, binary, config) first. -->
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>com.watchtower.runner</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/usr/local/bin/watchtower-runner</string>
+    <string>--config</string>
+    <string>/Users/YOU/.config/watchtower/runner.toml</string>
+    <string>run</string>
+  </array>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key><string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+  </dict>
+  <key>RunAtLoad</key><true/>
+  <key>KeepAlive</key><true/>
+  <key>StandardErrorPath</key><string>/Users/YOU/Library/Logs/watchtower-runner.log</string>
+  <key>StandardOutPath</key><string>/Users/YOU/Library/Logs/watchtower-runner.log</string>
+</dict>
+</plist>

@@ -12,7 +12,7 @@ mkdir -p "$DIST"
 
 for target in $TARGETS; do
   echo "==> building $target"
-  (cd "$ROOT" && cargo build --release --target "$target" -p watchtower-agent -p watchtower-server)
+  (cd "$ROOT" && cargo build --release --target "$target" -p watchtower-agent -p watchtower-server -p watchtower-runner)
   TARBALL="$DIST/watchtower-$VERSION-$target.tar.gz"
   cat > "$ROOT/target/$target/release/watchtower-server.service" <<UNIT
 [Unit]
@@ -38,7 +38,7 @@ CapabilityBoundingSet=
 [Install]
 WantedBy=multi-user.target
 UNIT
-  tar -C "$ROOT/target/$target/release" -czf "$TARBALL" watchtower-agent watchtower-server watchtower-server.service
+  tar -C "$ROOT/target/$target/release" -czf "$TARBALL" watchtower-agent watchtower-server watchtower-runner watchtower-server.service
   echo "built $TARBALL"
 done
 

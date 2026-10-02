@@ -1,0 +1,17 @@
+[Unit]
+Description=Watchtower agent-task runner (outbound HTTPS only)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+# Run as the user who owns the repositories and is logged in to the agent
+# CLI (e.g. `claude`); the agent needs that user's git and CLI credentials.
+User=YOUR_USER
+ExecStart=/usr/local/bin/watchtower-runner --config /etc/watchtower/runner.toml run
+Restart=always
+RestartSec=10
+NoNewPrivileges=yes
+PrivateTmp=yes
+
+[Install]
+WantedBy=multi-user.target

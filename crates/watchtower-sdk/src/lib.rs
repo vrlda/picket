@@ -1,7 +1,9 @@
-//! Minimal watchtower exception-capture SDK. Apps call [`Client::capture`]
-//! with the exception type, message, level, and stack frames; the server
-//! fingerprints and groups them into incidents. Blocking, no async, no
-//! external services beyond the watchtower server.
+//! Minimal watchtower SDK. Apps call [`Client::capture`] with an
+//! exception (type, message, level, stack frames; the server fingerprints
+//! and groups them) or [`Client::capture_event`] with a custom
+//! application/business event ("payment.request_failed") that rules turn
+//! into incidents. Blocking, no async, no external services beyond the
+//! watchtower server.
 
 use std::time::Duration;
 
@@ -64,7 +66,38 @@ impl Client {
                 })).collect::<Vec<_>>(),
             }
         });
-        let url = format!("{}/v1/errors", self.endpoint.trim_end_matches('/'));
+        self.post("/v1/errors", &body)
+    }
+
+    /// Report a custom event (POST /v1/events). `event` needs at least
+    /// `kind` (dotted, e.g. "payment.request_failed") and `summary`;
+    /// `source`/`environment` default to the client's service and
+    /// environment. Best-effort with one retry; never panics.
+    ///
+    /// ```no_run
+    /// # let client = watchtower_sdk::Client::from_env().unwrap();
+    /// client.capture_event(serde_json::json!({
+    ///     "kind": "payment.request_failed",
+    ///     "summary": "Payment request failed",
+    ///     "severity": "warning",
+    ///     "subject": "merchant:mer_1",
+    ///     "attributes": { "merchant_id": "mer_1", "status_code": 502 },
+    ///     "measurements": { "latency_ms": 812 }
+    /// }));
+    /// ```
+    pub fn capture_event(&self, mut event: serde_json::Value) -> bool {
+        let Some(obj) = event.as_object_mut() else {
+            return false;
+        };
+        obj.entry("source")
+            .or_insert_with(|| self.service.clone().into());
+        obj.entry("environment")
+            .or_insert_with(|| self.environment.clone().into());
+        self.post("/v1/events", &event)
+    }
+
+    fn post(&self, path: &str, body: &serde_json::Value) -> bool {
+        let url = format!("{}{}", self.endpoint.trim_end_matches('/'), path);
         for attempt in 0..2 {
             let agent = ureq::AgentBuilder::new()
                 .timeout(Duration::from_secs(10))
@@ -76,6 +109,8 @@ impl Client {
                 .send_string(&body.to_string());
             match res {
                 Ok(r) if (200..300).contains(&r.status()) => return true,
+                // rejected (invalid event / auth): retrying won't help
+                Err(ureq::Error::Status(code, _)) if (400..500).contains(&code) => return false,
                 _ => {
                     if attempt == 0 {
                         std::thread::sleep(Duration::from_millis(200));
@@ -180,5 +215,71 @@ mod tests {
             environment: "e".into(),
         };
         assert!(!client.capture("error", "T", "m", &[]));
+    }
+
+    /// One-request mock server: returns (base url, handle → raw request).
+    fn mock() -> (String, std::thread::JoinHandle<String>) {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let handle = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            stream
+                .set_read_timeout(Some(std::time::Duration::from_secs(2)))
+                .unwrap();
+            let mut buf = Vec::new();
+            let mut tmp = [0u8; 4096];
+            loop {
+                match stream.read(&mut tmp) {
+                    Ok(0) | Err(_) => break,
+                    Ok(n) => buf.extend_from_slice(&tmp[..n]),
+                }
+                let text = String::from_utf8_lossy(&buf).to_string();
+                if let Some(end) = text.find("\r\n\r\n") {
+                    let len = text[..end]
+                        .lines()
+                        .find_map(|l| {
+                            l.to_ascii_lowercase()
+                                .strip_prefix("content-length:")
+                                .map(|v| v.trim().to_string())
+                        })
+                        .and_then(|v| v.parse::<usize>().ok())
+                        .unwrap_or(0);
+                    if end + 4 + len <= buf.len() {
+                        break;
+                    }
+                }
+            }
+            stream
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok")
+                .unwrap();
+            String::from_utf8_lossy(&buf).to_string()
+        });
+        (format!("http://{addr}"), handle)
+    }
+
+    #[test]
+    fn capture_event_posts_custom_event() {
+        let (url, handle) = mock();
+        let client = Client {
+            endpoint: url,
+            token: "tok".into(),
+            host_id: "h".into(),
+            service: "payment-api".into(),
+            environment: "production".into(),
+        };
+        assert!(client.capture_event(serde_json::json!({
+            "kind": "payment.request_failed",
+            "summary": "failed",
+            "attributes": { "merchant_id": "mer_1" }
+        })));
+        let req = handle.join().unwrap();
+        assert!(req.starts_with("POST /v1/events"), "{req}");
+        let body: serde_json::Value =
+            serde_json::from_str(&req[req.find("\r\n\r\n").unwrap() + 4..]).unwrap();
+        assert_eq!(body["kind"], "payment.request_failed");
+        assert_eq!(body["source"], "payment-api");
+        assert_eq!(body["environment"], "production");
+        assert_eq!(body["attributes"]["merchant_id"], "mer_1");
+        assert!(!client.capture_event(serde_json::json!("not an object")));
     }
 }

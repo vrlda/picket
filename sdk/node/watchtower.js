@@ -1,5 +1,5 @@
 "use strict";
-// Watchtower exception-capture SDK (zero deps).
+// Watchtower SDK (zero deps): exception capture and custom events.
 // Env: WATCHTOWER_ENDPOINT (required), WATCHTOWER_TOKEN (required),
 // WATCHTOWER_HOST_ID, WATCHTOWER_SERVICE, WATCHTOWER_ENVIRONMENT.
 
@@ -23,22 +23,37 @@ class Client {
 
   capture(level, type, message, frames) {
     // frames: [{file, line, function}] — innermost first
+    return this._post("/v1/errors", {
+      host_id: this.host_id,
+      service: this.service,
+      environment: this.environment,
+      exception: {
+        type,
+        message,
+        level,
+        frames: frames || [],
+      },
+    });
+  }
+
+  // Emit a custom event (POST /v1/events).
+  // event: { kind: "payment.request_failed", summary, severity?, subject?,
+  //          attributes?, measurements?, id?, ts?, source?, environment? }
+  captureEvent(event) {
+    const e = Object.assign(
+      { severity: "info", source: this.service, environment: this.environment },
+      event || {}
+    );
+    return this._post("/v1/events", e);
+  }
+
+  _post(path, payload) {
     return new Promise((resolve) => {
       if (!this.endpoint || !this.token) {
         return resolve(false);
       }
-      const body = JSON.stringify({
-        host_id: this.host_id,
-        service: this.service,
-        environment: this.environment,
-        exception: {
-          type,
-          message,
-          level,
-          frames: frames || [],
-        },
-      });
-      const url = new URL(this.endpoint + "/v1/errors");
+      const body = JSON.stringify(payload);
+      const url = new URL(this.endpoint + path);
       const lib = url.protocol === "https:" ? https : http;
       let attempts = 0;
       const send = () => {
