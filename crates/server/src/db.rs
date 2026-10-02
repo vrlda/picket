@@ -47,6 +47,27 @@ fn with_create_flag(url: &str) -> String {
 
 /// Apply the schema. Idempotent — safe to run on every startup.
 pub async fn init_schema(pool: &sqlx::AnyPool) -> Result<(), sqlx::Error> {
+    // One connection for the whole migration. On postgres, concurrent
+    // CREATE ... IF NOT EXISTS from two starting servers (or parallel
+    // tests) can still collide in the catalog — an advisory lock
+    // serializes them.
+    let pg = is_postgres(pool);
+    let mut conn = pool.acquire().await?;
+    if pg {
+        sqlx::query("SELECT pg_advisory_lock(7_207_207)")
+            .execute(&mut *conn)
+            .await?;
+    }
+    let res = init_schema_on(&mut conn, pg).await;
+    if pg {
+        let _ = sqlx::query("SELECT pg_advisory_unlock(7_207_207)")
+            .execute(&mut *conn)
+            .await;
+    }
+    res
+}
+
+async fn init_schema_on(conn: &mut sqlx::AnyConnection, pg: bool) -> Result<(), sqlx::Error> {
     sqlx::query(
         "CREATE TABLE IF NOT EXISTS hosts (
             host_id    TEXT PRIMARY KEY,
@@ -55,7 +76,7 @@ pub async fn init_schema(pool: &sqlx::AnyPool) -> Result<(), sqlx::Error> {
             version    TEXT NOT NULL DEFAULT ''
         )",
     )
-    .execute(pool)
+    .execute(&mut *conn)
     .await?;
     sqlx::query(
         "CREATE TABLE IF NOT EXISTS events (
@@ -70,16 +91,16 @@ pub async fn init_schema(pool: &sqlx::AnyPool) -> Result<(), sqlx::Error> {
             created_at    BIGINT NOT NULL -- server ingest time; NEVER used for ordering
         )",
     )
-    .execute(pool)
+    .execute(&mut *conn)
     .await?;
     sqlx::query("CREATE INDEX IF NOT EXISTS idx_events_host_ts ON events (host_id, ts DESC)")
-        .execute(pool)
+        .execute(&mut *conn)
         .await?;
     sqlx::query("CREATE INDEX IF NOT EXISTS idx_events_kind ON events (kind)")
-        .execute(pool)
+        .execute(&mut *conn)
         .await?;
     sqlx::query("CREATE INDEX IF NOT EXISTS idx_events_ts ON events (ts)")
-        .execute(pool)
+        .execute(&mut *conn)
         .await?;
     sqlx::query(
         "CREATE TABLE IF NOT EXISTS incidents (
@@ -98,18 +119,18 @@ pub async fn init_schema(pool: &sqlx::AnyPool) -> Result<(), sqlx::Error> {
             resolved_at BIGINT
         )",
     )
-    .execute(pool)
+    .execute(&mut *conn)
     .await?;
     sqlx::query("CREATE INDEX IF NOT EXISTS idx_incidents_key ON incidents (key, status)")
-        .execute(pool)
+        .execute(&mut *conn)
         .await?;
     sqlx::query("CREATE INDEX IF NOT EXISTS idx_incidents_created ON incidents (created_at DESC)")
-        .execute(pool)
+        .execute(&mut *conn)
         .await?;
     sqlx::query(
         "CREATE UNIQUE INDEX IF NOT EXISTS idx_incidents_key_open ON incidents (key) WHERE status != 'resolved'",
     )
-    .execute(pool)
+    .execute(&mut *conn)
     .await?;
     sqlx::query(
         "CREATE TABLE IF NOT EXISTS incident_events (
@@ -118,12 +139,12 @@ pub async fn init_schema(pool: &sqlx::AnyPool) -> Result<(), sqlx::Error> {
             PRIMARY KEY (incident_id, event_id)
         )",
     )
-    .execute(pool)
+    .execute(&mut *conn)
     .await?;
     sqlx::query(
         "CREATE INDEX IF NOT EXISTS idx_incident_events_event ON incident_events (event_id)",
     )
-    .execute(pool)
+    .execute(&mut *conn)
     .await?;
     sqlx::query(
         "CREATE TABLE IF NOT EXISTS settings (
@@ -131,9 +152,9 @@ pub async fn init_schema(pool: &sqlx::AnyPool) -> Result<(), sqlx::Error> {
             value TEXT NOT NULL
         )",
     )
-    .execute(pool)
+    .execute(&mut *conn)
     .await?;
-    ensure_column(pool, "hosts", "queue_len", "BIGINT NOT NULL DEFAULT 0").await?;
+    ensure_column(conn, pg, "hosts", "queue_len", "BIGINT NOT NULL DEFAULT 0").await?;
     // custom/application events (POST /v1/events): structured context.
     // Defaults keep every pre-existing row valid.
     for (column, coltype) in [
@@ -143,15 +164,15 @@ pub async fn init_schema(pool: &sqlx::AnyPool) -> Result<(), sqlx::Error> {
         ("attributes_json", "TEXT NOT NULL DEFAULT '{}'"),
         ("measurements_json", "TEXT NOT NULL DEFAULT '{}'"),
     ] {
-        ensure_column(pool, "events", column, coltype).await?;
+        ensure_column(conn, pg, "events", column, coltype).await?;
     }
     sqlx::query("CREATE INDEX IF NOT EXISTS idx_events_subject ON events (subject)")
-        .execute(pool)
+        .execute(&mut *conn)
         .await?;
     sqlx::query("CREATE INDEX IF NOT EXISTS idx_events_source ON events (source)")
-        .execute(pool)
+        .execute(&mut *conn)
         .await?;
-    crate::dispatch::init_schema(pool).await?;
+    crate::dispatch::init_schema(conn, pg).await?;
     Ok(())
 }
 
@@ -182,27 +203,28 @@ pub async fn set_setting(pool: &sqlx::AnyPool, key: &str, value: &str) -> Result
 /// "TEXT NOT NULL DEFAULT ''"). SQLite lacks ADD COLUMN IF NOT EXISTS, so
 /// it walks PRAGMA table_info; postgres has the ANSI form.
 pub(crate) async fn ensure_column(
-    pool: &sqlx::AnyPool,
+    conn: &mut sqlx::AnyConnection,
+    postgres: bool,
     table: &str,
     column: &str,
     coltype: &str,
 ) -> Result<(), sqlx::Error> {
-    if is_postgres(pool) {
+    if postgres {
         sqlx::query(&format!(
             "ALTER TABLE {table} ADD COLUMN IF NOT EXISTS {column} {coltype}"
         ))
-        .execute(pool)
+        .execute(&mut *conn)
         .await?;
         return Ok(());
     }
     let rows = sqlx::query(&format!("PRAGMA table_info({})", table))
-        .fetch_all(pool)
+        .fetch_all(&mut *conn)
         .await?;
     if !rows.iter().any(|r| r.get::<String, _>("name") == column) {
         sqlx::query(&format!(
             "ALTER TABLE {table} ADD COLUMN {column} {coltype}"
         ))
-        .execute(pool)
+        .execute(&mut *conn)
         .await?;
     }
     Ok(())
