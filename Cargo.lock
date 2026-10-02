@@ -2118,6 +2118,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "watchtower-runner"
+version = "0.3.0"
+dependencies = [
+ "axum",
+ "clap",
+ "glob",
+ "serde",
+ "serde_json",
+ "sqlx",
+ "tokio",
+ "toml",
+ "ureq",
+ "watchtower-server",
+ "wt-common",
+]
+
+[[package]]
 name = "watchtower-sdk"
 version = "0.3.0"
 dependencies = [
