@@ -3,7 +3,7 @@
 [![CI](https://github.com/vrlda/watchtower/actions/workflows/ci.yml/badge.svg)](https://github.com/vrlda/watchtower/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-Production server autopilot. One small agent watches the health and security of a server; a control plane correlates the signals into incidents and tells you about them. No per-seat pricing, no cloud dependency — it runs on your own box or VPS.
+Production server and application autopilot. A small agent watches the health and security of your servers, your apps send exceptions and custom business events, and a control plane correlates it all into incidents — then tells a human, or hands the incident to a coding agent (Claude Code) on an always-on machine and verifies the fix from production telemetry. No per-seat pricing, no cloud dependency — it runs on your own box or VPS.
 
 ## What it watches
 
@@ -15,12 +15,22 @@ Production server autopilot. One small agent watches the health and security of 
 | **Network** | New listening ports (TCP + UDP), new outbound destinations, connection-rate spikes, port scans |
 | **Applications** | Access-log parsing (5xx rate, request-rate spikes), TLS certificate expiry, Docker containers (state + crash loops), **in-app exception capture** with SDKs for Rust, Python, Node, and Go |
 | **Uptime** | External HTTP(S) probes with failure thresholds |
+| **Business events** | Anything your app reports: `payment.request_failed`, `checkout.conversion_sample`, `merchant.webhook_failed`, … with attributes and measurements; rules count, group and threshold them |
 
 ## How it works
 
 - **Agent** (`watchtower-agent`) — a single binary per host. Polls systemd/journald/procfs, batches events, POSTs them to the control plane. JSONL disk spool with ack-based drain survives server outages; state (seen IPs, journal cursor, baselines) persists across restarts.
 - **Server** (`watchtower-server`) — ingests events, runs rule-based correlation, groups them into **incidents**, and notifies. SQLite by default, Postgres supported. Headless — no web UI: you get alerted, and you acknowledge/resolve straight from the Telegram alert. An incident absorbs follow-up events (one timeline per problem) with a re-notify throttle.
 - **Exception capture** — apps POST exceptions to `/v1/errors`; the server fingerprints them (type + service + first frames) and each recurring bug becomes one incident — same list, timeline, resolve and notify flow as infra events.
+- **Custom events** — apps POST structured events to `/v1/events`; threshold rules (count / window / group-by / conditions) turn them into incidents, e.g. "10 payment failures for merchant mer_123 in 2 minutes" or "conversion below 70% on ≥100 attempts".
+- **Runner** (`watchtower-runner`, optional) — runs on an always-on Mac or workstation, connects **outbound only** (works behind NAT), takes agent tasks for incidents, runs Claude Code in an isolated git worktree, and reports a structured result. Watchtower resolves the incident only once it **observes recovery** — an agent saying "fixed" is not proof.
+
+```
+events (hosts, exceptions, apps) → rules → incident → notify (Telegram/Slack/webhook)
+                                                     → agent task → runner → Claude Code → fix
+                                                                    ↑                        ↓
+                                        Watchtower verifies recovery ← production telemetry
+```
 
 ## Quick start
 
@@ -113,7 +123,7 @@ text, capped at Telegram's 4096-character limit (newest 10 timeline entries; the
 `GET /v1/incidents/{id}`), and failed sends are retried. Wrong passwords lock a chat out after 5 attempts;
 the accepted password message is deleted from the chat.
 
-## Exception capture SDKs
+## SDKs: exceptions and custom events
 
 Zero-dependency, config via `WATCHTOWER_ENDPOINT` / `WATCHTOWER_TOKEN` / `WATCHTOWER_HOST_ID` / `WATCHTOWER_SERVICE` / `WATCHTOWER_ENVIRONMENT`:
 
@@ -124,7 +134,126 @@ Zero-dependency, config via `WATCHTOWER_ENDPOINT` / `WATCHTOWER_TOKEN` / `WATCHT
 | Node | `sdk/node/watchtower.js` | `node --test sdk/node/test.js` |
 | Go | `sdk/go/watchtower.go` | `cd sdk/go && go test ./...` |
 
-Python's `capture_exception()` grabs the current exception; Rust adds `capture_panic()`. Any language can POST directly (curl reference in the README below, section "API"). Levels: `fatal`/`error` → Critical, `warning` → Warning, `info`/`debug` → Info. Non-goals: breadcrumbs, session replay, APM, release tracking.
+Exceptions: `capture(...)`; Python's `capture_exception()` grabs the current exception; Rust adds `capture_panic()`. Levels: `fatal`/`error` → Critical, `warning` → Warning, `info`/`debug` → Info.
+
+Custom events: `capture_event` (Node `captureEvent`, Go `CaptureEvent`):
+
+```python
+wt.capture_event("payment.request_failed", "Payment request failed",
+                 severity="warning", subject=f"merchant:{merchant_id}",
+                 attributes={"merchant_id": merchant_id, "provider": "a", "status_code": 502},
+                 measurements={"latency_ms": 812})
+```
+
+Kinds are dotted lowercase names (`[a-z0-9._-]`, ≤128 chars, at least one dot); the built-in PascalCase kinds are reserved. `attributes` are dimensions rules can group and filter on; `measurements` are numbers rules can compare. Custom events become incidents only through rules — no rule, no alert. Non-goals: analytics, breadcrumbs, session replay, APM.
+
+## Rules for custom events
+
+```toml
+# 10 failures for the same merchant within 2 minutes → one incident per merchant
+[[rule]]
+id = "merchant_payment_failures"
+trigger = "payment.request_failed"
+count = 10
+window_secs = 120
+group_by = ["attributes.merchant_id"]
+severity = "Critical"
+headline = "Payment failures for merchant {attributes.merchant_id} ({count} in {window}s)"
+cause = "Repeated payment failures exceeded the threshold."
+recommended_actions = ["Inspect recent failed requests", "Compare with successful requests"]
+[rule.recovery]          # auto-resolve after 2 quiet minutes (verified recovery)
+window_secs = 120
+
+# business signal: conversion below 70% on meaningful volume
+[[rule]]
+id = "conversion_low"
+trigger = "payment.conversion_sample"
+group_by = ["attributes.merchant_id"]
+severity = "Warning"
+headline = "Conversion {measurements.conversion_rate} for {attributes.merchant_id}"
+[[rule.where]]
+field = "measurements.attempts"
+op = ">="                # eq neq gt gte lt lte exists (or == != > >= < <=)
+value = 100
+[[rule.where]]
+field = "measurements.conversion_rate"
+op = "<"
+value = 0.70
+```
+
+- `count` events matching `trigger` and every `where` within `window_secs`, per `group_by` key, open one incident keyed `rule:<id>:merchant_id=mer_123`; later matches absorb into it.
+- Fields: `attributes.<name>`, `measurements.<name>`, `source` (alias `service`), `environment`, `subject`, `kind`, `severity`, `host_id`, `key`. Templates fill any of them (`{attributes.merchant_id}`), plus `{count}` and `{window}`.
+- Exceptions from `/v1/errors` carry `source`, `environment` and `attributes.exception_type`, so `trigger = "AppException"` rules can group by service too.
+- Existing rules (`supporting` / `min_supporting`) keep working unchanged.
+
+## Autonomous response (agent dispatch)
+
+An incident can wake a coding agent on an always-on machine — no human in the loop as transport.
+
+**1. Server** (`server.toml`): a runner, a profile, and a rule that dispatches to it:
+
+```toml
+[runners.home-mac]
+token = "<long random token>"
+labels = ["payments"]
+
+[agent_profiles.payment_api]
+labels = ["payments"]          # or runner = "home-mac"
+max_attempts = 2               # execution retries (runner crash, timeout, lost lease)
+max_tasks_per_incident = 2     # fix → new failure → fix … loop guard
+max_tasks_per_hour = 6
+verify_timeout_secs = 1800     # fix must be observed within this time
+
+[[rule]]
+id = "merchant_payment_failures"
+# … trigger / count / group_by as above, plus [rule.recovery] …
+[[rule.dispatch]]
+type = "agent"
+profile = "payment_api"
+[[rule.dispatch]]
+type = "notify"
+channel = "telegram"
+policy = "on_agent_result"     # always | on_open | on_agent_start | on_agent_result |
+                               # on_agent_success | on_agent_failure | on_escalation |
+                               # on_verified_resolution | never
+```
+
+Without `notify` actions a rule uses the severity routing; agent start/success notices stay quiet then, while failures, escalations and verified recovery always reach you.
+
+**2. Runner** (`runner.toml` on the machine with the code and the `claude` CLI). *How* the agent runs is configured here, never on the server — Watchtower can't make your machine run a command:
+
+```toml
+server_url = "https://watchtower.example.com"
+runner_id = "home-mac"
+token = "<same token>"
+work_dir = "/Users/dan/.watchtower-runner"   # worktrees + logs
+
+[profiles.payment_api]
+adapter = "claude-code"         # or "command" with command = ["my-agent", ...] (prompt on stdin)
+workspace = "/Users/dan/code/payment-platform"
+autonomy = "patch"              # investigate | patch | commit | deploy
+timeout_secs = 1800
+blocked_paths = ["src/ledger/**", "src/settlement/**", "migrations/**"]
+require_human_approval_paths = ["src/auth/**"]
+prompt_file = "/Users/dan/.watchtower-runner/payment-api.md"   # optional extra instructions
+# allowed_tools = ["Read", "Grep", "Glob", "Edit", "Write", "Bash(cargo test:*)"]
+# model = "claude-opus-5-5"
+```
+
+```bash
+watchtower-runner --config runner.toml check   # workspaces, CLI, server connection
+watchtower-runner --config runner.toml run      # or install deploy/com.watchtower.runner.plist (macOS) /
+                                                 # deploy/watchtower-runner.service (Linux)
+```
+
+**What happens:** incident → durable task (one active task per incident) → the runner's long-poll claims it under a lease → Claude Code runs in a fresh git worktree on branch `watchtower/<task>` (your checkout is never touched) with the incident context → it classifies the problem (platform bug vs. client integration vs. invalid input vs. provider issue …), fixes within its autonomy, runs tests, and ends with a structured result → the runner checks the **actual** changes against the autonomy level and path rules (violations become a human escalation) → Watchtower records everything in the incident's activity log:
+
+- `fixed` + `[rule.recovery]` → *awaiting verification*; the incident resolves only after the trigger stays quiet for the recovery window. A recurring failure resets the timer; no recovery within `verify_timeout_secs` → you're told the fix didn't verify.
+- `no_change` → diagnosis recorded (e.g. "merchant signs webhooks with the wrong secret").
+- `needs_human` → Telegram gets the diagnosis and *exactly* what decision is needed; the incident is not re-dispatched.
+- Runner offline / CLI crash / quota / timeout → retried up to `max_attempts`, then you're told. A task no runner picks up within 5 minutes alerts too.
+
+**Security model:** runner tokens only reach runner endpoints; each claimed task gets its own context token (hashed at rest, valid only while the task runs) for the read-only context API; the context is secret-redacted (authorization headers, cookies, tokens, JWTs, private keys, URL credentials, card numbers); repository and production credentials stay on the runner; incident data is fenced in the prompt as **untrusted production data** — a merchant writing "ignore previous instructions…" into a request field is evidence, not an instruction.
 
 ## API
 
@@ -134,9 +263,16 @@ Python's `capture_exception()` grabs the current exception; Rust adds `capture_p
 | `POST /v1/heartbeat` | Host registration/heartbeat |
 | `POST /v1/errors` | App exception capture (fingerprint-grouped) |
 | `GET /v1/hosts` | Host registry |
-| `GET /v1/events?host=&kind=&severity=&since=&limit=` | Event queries (ordered by ts, id — never arrival order) |
-| `GET /v1/incidents` | Incidents with timelines |
+| `POST /v1/events` | One custom event (`kind` + `summary` required; idempotent per `id`) |
+| `GET /v1/events?host=&kind=&severity=&source=&environment=&subject=&incident_id=&since=&until=&attr.<name>=&limit=` | Event queries (ordered by ts, id — never arrival order) |
+| `GET /v1/incidents` | Incidents |
+| `GET /v1/incidents/{id}` | Incident with timeline, activity log and agent tasks |
+| `GET /v1/incidents/{id}/events` | The incident's events (same filters as `/v1/events`) |
 | `POST /v1/incidents/{id}/ack` · `/resolve` | Acknowledge / resolve (409 if the incident is already resolved) |
+| `POST /v1/runners/register` · `/heartbeat` | Runner check-in (runner token) |
+| `GET /v1/agent-tasks/next?timeout=30` | Long-poll: claims the next task under a lease (runner token) |
+| `POST /v1/agent-tasks/{id}/heartbeat` · `/started` · `/complete` · `/fail` | Lease renewal and results (runner token; 409 = lease lost) |
+| `GET /v1/agent-tasks/{id}/context` · `/events` | Incident context for the working agent (task token; redacted) |
 
 Curl exception reference:
 
@@ -153,7 +289,7 @@ curl -fsS -X POST http://SERVER:8787/v1/errors \
 
 Agent (`agent.toml`): `state_file`, `watch_paths`, `watch_authorized_keys`, `ssh_brute_threshold`, `ssh_brute_window_secs`, `error_patterns`, `error_window_secs`, `error_threshold`, `docker_enabled`, `cert_paths`, `cert_warn_days`, `cert_crit_days`, `cert_scan_interval_secs`, `access_log_paths`, `request_rate_threshold`, `request_rate_window_secs`, `process_scan_interval_secs`, `scan_threshold`, `scan_window_secs`.
 
-Server (`server.toml`): `listen`, `db_url` (sqlite default; `postgres://` supported), `auth_token`, `host_tokens` (per-host tokens — an agent presenting one is attributed to that host, payload `host_id` overridden), `notify_min_interval_secs`, `[[probes]]` (uptime checks), `[notify.routing]`.
+Server (`server.toml`): `listen`, `db_url` (sqlite default; `postgres://` supported), `auth_token`, `host_tokens` (per-host tokens — an agent presenting one is attributed to that host, payload `host_id` overridden), `[event_sources.<name>]` (`token`, `source`, `environment` — a per-application token that can only post events and pins their source), `notify_min_interval_secs`, `[[probes]]` (uptime checks), `[notify.routing]`, `[[rule]]` (with `count`, `group_by`, `[[rule.where]]`, `[rule.recovery]`, `[[rule.dispatch]]`), `[runners.<id>]`, `[agent_profiles.<name>]`.
 
 ## Development
 

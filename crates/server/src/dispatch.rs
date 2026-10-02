@@ -175,7 +175,7 @@ pub mod status {
 }
 
 /// Dispatch tables. Idempotent; called from db::init_schema.
-pub async fn init_schema(pool: &sqlx::AnyPool) -> Result<(), sqlx::Error> {
+pub async fn init_schema(conn: &mut sqlx::AnyConnection, pg: bool) -> Result<(), sqlx::Error> {
     sqlx::query(
         "CREATE TABLE IF NOT EXISTS agent_runners (
             id         TEXT PRIMARY KEY,
@@ -186,7 +186,7 @@ pub async fn init_schema(pool: &sqlx::AnyPool) -> Result<(), sqlx::Error> {
             created_at BIGINT NOT NULL
         )",
     )
-    .execute(pool)
+    .execute(&mut *conn)
     .await?;
     sqlx::query(
         "CREATE TABLE IF NOT EXISTS agent_tasks (
@@ -210,19 +210,19 @@ pub async fn init_schema(pool: &sqlx::AnyPool) -> Result<(), sqlx::Error> {
             alerted     BIGINT NOT NULL DEFAULT 0
         )",
     )
-    .execute(pool)
+    .execute(&mut *conn)
     .await?;
     sqlx::query(&format!(
         "CREATE UNIQUE INDEX IF NOT EXISTS idx_agent_tasks_active
          ON agent_tasks (incident_id) WHERE status IN {}",
         status::ACTIVE_SQL
     ))
-    .execute(pool)
+    .execute(&mut *conn)
     .await?;
     sqlx::query(
         "CREATE INDEX IF NOT EXISTS idx_agent_tasks_status ON agent_tasks (status, created_at)",
     )
-    .execute(pool)
+    .execute(&mut *conn)
     .await?;
     sqlx::query(
         "CREATE TABLE IF NOT EXISTS incident_activity (
@@ -235,14 +235,14 @@ pub async fn init_schema(pool: &sqlx::AnyPool) -> Result<(), sqlx::Error> {
             data_json   TEXT NOT NULL DEFAULT '{}'
         )",
     )
-    .execute(pool)
+    .execute(&mut *conn)
     .await?;
     sqlx::query(
         "CREATE INDEX IF NOT EXISTS idx_incident_activity ON incident_activity (incident_id, ts)",
     )
-    .execute(pool)
+    .execute(&mut *conn)
     .await?;
-    crate::db::ensure_column(pool, "incidents", "rule_id", "TEXT NOT NULL DEFAULT ''").await?;
+    crate::db::ensure_column(conn, pg, "incidents", "rule_id", "TEXT NOT NULL DEFAULT ''").await?;
     Ok(())
 }
 
