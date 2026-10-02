@@ -58,3 +58,30 @@ test("server down retries then resolves false", async () => {
   });
   assert.strictEqual(await client.capture("error", "T", "m"), false);
 });
+
+test("captureEvent posts a custom event", async () => {
+  await withServer(async (server, captured) => {
+    const client = new Client({
+      endpoint: `http://127.0.0.1:${captured.port}`,
+      token: "tok",
+      service: "payment-api",
+      environment: "production",
+    });
+    const ok = await client.captureEvent({
+      kind: "payment.request_failed",
+      summary: "Payment request failed",
+      severity: "warning",
+      subject: "merchant:mer_1",
+      attributes: { merchant_id: "mer_1", status_code: 502 },
+      measurements: { latency_ms: 812 },
+    });
+    assert.strictEqual(ok, true);
+    assert.strictEqual(captured.path, "/v1/events");
+    assert.strictEqual(captured.body.kind, "payment.request_failed");
+    assert.strictEqual(captured.body.source, "payment-api");
+    assert.strictEqual(captured.body.environment, "production");
+    assert.strictEqual(captured.body.attributes.status_code, 502);
+    assert.strictEqual(captured.body.measurements.latency_ms, 812);
+    server.close();
+  });
+});

@@ -1,6 +1,6 @@
-// Package watchtower is a minimal exception-capture SDK: apps report
-// exceptions to a watchtower server, which fingerprints and groups them
-// into incidents.
+// Package watchtower is a minimal SDK: apps report exceptions (grouped by
+// fingerprint) and custom application/business events to a watchtower
+// server, whose rules turn them into incidents.
 //
 // Env: WATCHTOWER_ENDPOINT (required), WATCHTOWER_TOKEN (required),
 // WATCHTOWER_HOST_ID, WATCHTOWER_SERVICE, WATCHTOWER_ENVIRONMENT.
@@ -84,7 +84,49 @@ func (c *Client) Capture(level, kind, message string, frames []Frame) bool {
 	if err != nil {
 		return false
 	}
-	url := c.Endpoint + "/v1/errors"
+	return c.post("/v1/errors", payload)
+}
+
+// Event is a custom application/business event (POST /v1/events). Kind is
+// a dotted name such as "payment.request_failed"; Attributes are
+// dimensions, Measurements numbers rules can compare.
+type Event struct {
+	Kind         string             `json:"kind"`
+	Summary      string             `json:"summary"`
+	Severity     string             `json:"severity,omitempty"`
+	Subject      string             `json:"subject,omitempty"`
+	Source       string             `json:"source,omitempty"`
+	Environment  string             `json:"environment,omitempty"`
+	ID           string             `json:"id,omitempty"`
+	TS           int64              `json:"ts,omitempty"`
+	Attributes   map[string]any     `json:"attributes,omitempty"`
+	Measurements map[string]float64 `json:"measurements,omitempty"`
+}
+
+// CaptureEvent reports a custom event; Source and Environment default to
+// the client's Service and Environment. Best-effort with one retry.
+func (c *Client) CaptureEvent(e Event) bool {
+	if c.Endpoint == "" || c.Token == "" {
+		return false
+	}
+	if e.Source == "" {
+		e.Source = c.Service
+	}
+	if e.Environment == "" {
+		e.Environment = c.Environment
+	}
+	if e.Severity == "" {
+		e.Severity = "info"
+	}
+	payload, err := json.Marshal(e)
+	if err != nil {
+		return false
+	}
+	return c.post("/v1/events", payload)
+}
+
+func (c *Client) post(path string, payload []byte) bool {
+	url := c.Endpoint + path
 	for attempt := 0; attempt < 2; attempt++ {
 		req, err := http.NewRequest(http.MethodPost, url, bytes.NewReader(payload))
 		if err != nil {
@@ -98,6 +140,9 @@ func (c *Client) Capture(level, kind, message string, frames []Frame) bool {
 			resp.Body.Close()
 			if resp.StatusCode >= 200 && resp.StatusCode < 300 {
 				return true
+			}
+			if resp.StatusCode >= 400 && resp.StatusCode < 500 {
+				return false // rejected: don't retry
 			}
 		}
 		if attempt == 0 {

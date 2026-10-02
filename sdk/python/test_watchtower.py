@@ -62,10 +62,29 @@ class TestSdk(unittest.TestCase):
         self.assertEqual(b["exception"]["message"], "boom")
         self.assertGreater(len(b["exception"]["frames"]), 0)
 
+    def test_capture_event_payload(self):
+        c = watchtower.Client(endpoint="http://127.0.0.1:%d" % self.port,
+                              token="tok", service="payment-api", environment="production")
+        ok = c.capture_event("payment.request_failed", "Payment request failed",
+                             severity="warning", subject="merchant:mer_1",
+                             attributes={"merchant_id": "mer_1", "status_code": 502},
+                             measurements={"latency_ms": 812})
+        self.assertTrue(ok)
+        self.assertEqual(Handler.captured["path"], "/v1/events")
+        b = Handler.captured["body"]
+        self.assertEqual(b["kind"], "payment.request_failed")
+        self.assertEqual(b["source"], "payment-api")
+        self.assertEqual(b["environment"], "production")
+        self.assertEqual(b["subject"], "merchant:mer_1")
+        self.assertEqual(b["attributes"]["status_code"], 502)
+        self.assertEqual(b["measurements"]["latency_ms"], 812)
+        self.assertNotIn("id", b)
+
     def test_no_config_no_crash(self):
         c = watchtower.Client()
         self.assertFalse(c.capture("error", "T", "m"))
         self.assertFalse(c.capture_exception())
+        self.assertFalse(c.capture_event("a.b", "x"))
 
 
 if __name__ == "__main__":
