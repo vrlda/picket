@@ -565,7 +565,7 @@ async fn owned_task(
     Ok(t)
 }
 
-fn profile_of<'a>(state: &'a AppState, t: &TaskRow) -> AgentProfile {
+fn profile_of(state: &AppState, t: &TaskRow) -> AgentProfile {
     state
         .cfg
         .agent_profiles

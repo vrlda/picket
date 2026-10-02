@@ -56,7 +56,7 @@ fn luhn_ok(digits: &[u8]) -> bool {
         }
         sum += v;
     }
-    sum % 10 == 0
+    sum.is_multiple_of(10)
 }
 
 /// Mask card-number-looking digit runs (13–19 digits, spaces/dashes
