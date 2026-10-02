@@ -53,7 +53,59 @@ pub async fn get_incident(
             StatusCode::INTERNAL_SERVER_ERROR
         })?
         .ok_or(StatusCode::NOT_FOUND)?;
-    Ok(Json(incident_json(&inc)))
+    let mut json = incident_json(&inc);
+    let db_err = |e: sqlx::Error| {
+        eprintln!("incident fetch failed: {e}");
+        StatusCode::INTERNAL_SERVER_ERROR
+    };
+    json["activity"] = serde_json::Value::Array(
+        crate::dispatch::fetch_activity(&state.pool, &id)
+            .await
+            .map_err(db_err)?,
+    );
+    json["agent_tasks"] = serde_json::Value::Array(
+        crate::agent_tasks::tasks_for_incident(&state.pool, &id)
+            .await
+            .map_err(db_err)?,
+    );
+    Ok(Json(json))
+}
+
+/// GET /v1/incidents/{id}/events — the incident's events with the same
+/// filters as /v1/events (kind, subject, attr.<name>, since, until, limit).
+pub async fn incident_events(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    axum::extract::Query(mut params): axum::extract::Query<
+        std::collections::HashMap<String, String>,
+    >,
+) -> Response {
+    match incidents::fetch_incident(&state.pool, &id).await {
+        Ok(Some(_)) => {}
+        Ok(None) => {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(json!({ "error": "incident not found" })),
+            )
+                .into_response()
+        }
+        Err(e) => {
+            eprintln!("incident fetch failed: {e}");
+            return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+        }
+    }
+    params.insert("incident_id".into(), id);
+    let q = match crate::events::EventQuery::from_params(&params) {
+        Ok(q) => q,
+        Err(e) => return (StatusCode::BAD_REQUEST, Json(json!({ "error": e }))).into_response(),
+    };
+    match crate::events::fetch_events(&state.pool, &q).await {
+        Ok(events) => Json(json!({ "events": events })).into_response(),
+        Err(e) => {
+            eprintln!("incident events failed: {e}");
+            StatusCode::INTERNAL_SERVER_ERROR.into_response()
+        }
+    }
 }
 
 /// POST /v1/incidents/{id}/ack | /resolve
@@ -73,7 +125,25 @@ pub async fn set_status_route(
         }
     };
     match incidents::set_status(&state.pool, &id, status).await {
-        Ok(true) => Json(json!({ "ok": true })).into_response(),
+        Ok(true) => {
+            let _ = crate::dispatch::record_activity(
+                &state.pool,
+                &id,
+                "human",
+                "api",
+                &format!(
+                    "{} via API",
+                    if action == "ack" {
+                        "Acknowledged"
+                    } else {
+                        "Resolved"
+                    }
+                ),
+                json!({}),
+            )
+            .await;
+            Json(json!({ "ok": true })).into_response()
+        }
         Ok(false) => match incidents::fetch_incident(&state.pool, &id).await {
             Ok(Some(inc)) => (
                 StatusCode::CONFLICT,
@@ -103,11 +173,30 @@ pub async fn set_status_route(
     }
 }
 
-/// Canonical incident JSON — the notifier and UI both use this shape.
+/// Canonical incident JSON — the notifier and the API both use this shape.
+/// Derived fields (event kinds, first/last seen, sources, subjects) are
+/// computed from the timeline rather than stored.
 pub fn incident_json(inc: &incidents::Incident) -> serde_json::Value {
+    let mut kinds: std::collections::BTreeMap<&str, usize> = Default::default();
+    let mut sources: Vec<&str> = Vec::new();
+    let mut environments: Vec<&str> = Vec::new();
+    let mut subjects: Vec<&str> = Vec::new();
+    for e in &inc.timeline {
+        *kinds.entry(e.kind.as_str()).or_default() += 1;
+        for (list, v) in [
+            (&mut sources, &e.source),
+            (&mut environments, &e.environment),
+            (&mut subjects, &e.subject),
+        ] {
+            if !v.is_empty() && !list.contains(&v.as_str()) {
+                list.push(v);
+            }
+        }
+    }
     json!({
         "id": inc.id,
         "key": inc.key,
+        "rule_id": inc.rule_id,
         "host_id": inc.host_id,
         "severity": inc.severity,
         "status": format!("{:?}", inc.status).to_lowercase(),
@@ -119,15 +208,36 @@ pub fn incident_json(inc: &incidents::Incident) -> serde_json::Value {
         "updated_at": inc.updated_at,
         "acked_at": inc.acked_at,
         "resolved_at": inc.resolved_at,
-        "timeline": inc.timeline.iter().map(|e| json!({
-            "id": e.id,
-            "ts": e.ts,
-            "host_id": e.host_id,
-            "kind": e.kind,
-            "severity": e.severity,
-            "summary": e.summary,
-            "evidence": e.evidence,
-        })).collect::<Vec<_>>(),
+        "event_count": inc.timeline.len(),
+        "event_kinds": kinds,
+        "first_seen": inc.timeline.iter().map(|e| e.ts).min(),
+        "last_seen": inc.timeline.iter().map(|e| e.ts).max(),
+        "sources": sources,
+        "environments": environments,
+        "subjects": subjects,
+        "timeline": inc.timeline.iter().map(|e| {
+            let mut v = json!({
+                "id": e.id,
+                "ts": e.ts,
+                "host_id": e.host_id,
+                "kind": e.kind,
+                "severity": e.severity,
+                "summary": e.summary,
+                "evidence": e.evidence,
+            });
+            for (k, val) in [("source", &e.source), ("environment", &e.environment), ("subject", &e.subject)] {
+                if !val.is_empty() {
+                    v[k] = json!(val);
+                }
+            }
+            if !e.attributes.is_empty() {
+                v["attributes"] = json!(e.attributes);
+            }
+            if !e.measurements.is_empty() {
+                v["measurements"] = json!(e.measurements);
+            }
+            v
+        }).collect::<Vec<_>>(),
     })
 }
 

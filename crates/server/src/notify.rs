@@ -56,6 +56,8 @@ pub fn webhook_payload(incident_json: &serde_json::Value) -> String {
         "timeline": incident_json["timeline"],
         "incident_id": incident_json["id"],
         "host_id": incident_json["host_id"],
+        "rule_id": incident_json["rule_id"],
+        "notice": incident_json["_notice"],
     }))
     .unwrap_or_else(|_| "{}".into())
 }
@@ -91,8 +93,14 @@ pub fn slack_payload(incident_json: &serde_json::Value) -> String {
                 .collect()
         })
         .unwrap_or_default();
+    let notice = incident_json["_notice"]["text"].as_str().unwrap_or("");
     let text = format!(
-        "{}\n{}\n{}",
+        "{}{}\n{}\n{}",
+        if notice.is_empty() {
+            String::new()
+        } else {
+            format!("{}\n", escape_slack(notice))
+        },
         escape_slack(incident_json["headline"].as_str().unwrap_or("")),
         escape_slack(incident_json["cause"].as_str().unwrap_or("")),
         timeline.join("\n")
@@ -169,22 +177,38 @@ pub const TELEGRAM_TIMELINE_MAX: usize = 10;
 /// Telegram's message size limit; the incident id line is never cut off.
 pub fn telegram_payload(incident_json: &serde_json::Value) -> String {
     let sev = incident_json["severity"].as_str().unwrap_or("?");
+    let status = incident_json["status"].as_str().unwrap_or("open");
     let mut lines = vec![format!(
-        "[{}] {}",
+        "[{}]{} {}",
         sev.to_uppercase(),
+        if status == "resolved" {
+            " RESOLVED"
+        } else {
+            ""
+        },
         incident_json["headline"].as_str().unwrap_or("")
     )];
+    // agent lifecycle notices lead the message; the timeline is only
+    // repeated for incident changes
+    let notice = incident_json["_notice"]["text"].as_str().unwrap_or("");
+    let moment = incident_json["_notice"]["moment"]
+        .as_str()
+        .unwrap_or("incident");
+    if !notice.is_empty() {
+        lines.push(notice.to_string());
+    }
+    let brief = moment != "incident";
     if let Some(host) = incident_json["host_id"].as_str() {
         if !host.is_empty() {
             lines.push(format!("host: {}", host));
         }
     }
-    if let Some(cause) = incident_json["cause"].as_str() {
+    if let Some(cause) = incident_json["cause"].as_str().filter(|_| !brief) {
         if !cause.is_empty() {
             lines.push(cause.to_string());
         }
     }
-    if let Some(tl) = incident_json["timeline"].as_array() {
+    if let Some(tl) = incident_json["timeline"].as_array().filter(|_| !brief) {
         // timeline is newest-first (ts DESC)
         for e in tl.iter().take(TELEGRAM_TIMELINE_MAX) {
             lines.push(format!(
@@ -201,7 +225,7 @@ pub fn telegram_payload(incident_json: &serde_json::Value) -> String {
             ));
         }
     }
-    if let Some(actions) = incident_json["actions"].as_array() {
+    if let Some(actions) = incident_json["actions"].as_array().filter(|_| !brief) {
         for a in actions {
             lines.push(format!("> {}", a.as_str().unwrap_or("")));
         }
@@ -573,7 +597,15 @@ pub async fn notify_incident(
     let mut failed = Vec::new();
     let webhook = webhook_payload(incident_json);
     let slack = slack_payload(incident_json);
-    for channel in channels_for(cfg, severity) {
+    // `_channels` (set by rule dispatch routing) overrides severity routing
+    let channels: Vec<String> = match incident_json["_channels"].as_array() {
+        Some(list) => list
+            .iter()
+            .filter_map(|c| c.as_str().map(String::from))
+            .collect(),
+        None => channels_for(cfg, severity),
+    };
+    for channel in channels {
         if channel == "telegram" {
             let Some(client) = configured_telegram(cfg) else {
                 // telegram-only default routing + no token = silent
@@ -992,6 +1024,15 @@ impl TelegramBot {
         let current_status = format!("{:?}", current.status).to_lowercase();
         if changed {
             eprintln!("telegram: incident {id} {} by {who}", verb.to_lowercase());
+            let _ = crate::dispatch::record_activity(
+                &self.pool,
+                id,
+                "human",
+                &who,
+                &format!("{verb} by {who} via Telegram"),
+                serde_json::json!({}),
+            )
+            .await;
             self.answer(query_id, verb).await;
         } else {
             self.answer(query_id, &format!("Already {current_status}."))
@@ -1117,7 +1158,9 @@ mod tests {
                 severity: "Critical".into(),
                 summary: "myapp failed".into(),
                 evidence: vec![],
+                ..Default::default()
             }],
+            rule_id: String::new(),
         }
     }
 

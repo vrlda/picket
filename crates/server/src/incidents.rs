@@ -6,7 +6,7 @@ use crate::ingest::now_ms;
 
 /// Canonical incident column list — every SELECT uses it, every tuple
 /// destructure matches its order exactly.
-const INCIDENT_COLS: &str = "id, key, host_id, severity, headline, cause, actions_json, affected_json, created_at, updated_at, acked_at, resolved_at, status";
+const INCIDENT_COLS: &str = "id, key, host_id, severity, headline, cause, actions_json, affected_json, created_at, updated_at, acked_at, resolved_at, status, rule_id";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -16,7 +16,7 @@ pub enum IncidentStatus {
     Resolved,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct IncidentEvent {
     pub id: String,
     pub ts: i64,
@@ -25,6 +25,11 @@ pub struct IncidentEvent {
     pub severity: String,
     pub summary: String,
     pub evidence: Vec<serde_json::Value>,
+    pub source: String,
+    pub environment: String,
+    pub subject: String,
+    pub attributes: serde_json::Map<String, serde_json::Value>,
+    pub measurements: std::collections::BTreeMap<String, f64>,
 }
 
 #[derive(Debug, Clone)]
@@ -43,6 +48,8 @@ pub struct Incident {
     pub acked_at: Option<i64>,
     pub resolved_at: Option<i64>,
     pub timeline: Vec<IncidentEvent>,
+    /// Rule that opened the incident ("" for fallback/legacy rows).
+    pub rule_id: String,
 }
 
 /// Row tuple order MUST match incident_select() column order:
@@ -61,6 +68,7 @@ type IncidentRow = (
     i64,
     Option<i64>,
     Option<i64>,
+    String,
     String,
 );
 
@@ -85,6 +93,7 @@ fn row_to_incident(r: IncidentRow) -> Incident {
         resolved_at: r.11,
         status,
         timeline: vec![],
+        rule_id: r.13,
     }
 }
 
@@ -143,6 +152,7 @@ pub async fn create_incident(
         acked_at: None,
         resolved_at: None,
         timeline: vec![],
+        rule_id: String::new(),
     })
 }
 
@@ -173,32 +183,14 @@ pub async fn link_events(
 ) -> Result<usize, sqlx::Error> {
     let mut new = 0usize;
     let mut tx = pool.begin().await?;
-    let events_sql = if crate::db::is_postgres(pool) {
-        "INSERT INTO events (id, ts, host_id, key, kind, severity, summary, evidence_json, created_at)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) ON CONFLICT (id) DO NOTHING"
-    } else {
-        "INSERT OR IGNORE INTO events (id, ts, host_id, key, kind, severity, summary, evidence_json, created_at)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)"
-    };
-    let links_sql = if crate::db::is_postgres(pool) {
+    let pg = crate::db::is_postgres(pool);
+    let links_sql = if pg {
         "INSERT INTO incident_events (incident_id, event_id) VALUES ($1, $2) ON CONFLICT DO NOTHING"
     } else {
         "INSERT OR IGNORE INTO incident_events (incident_id, event_id) VALUES ($1, $2)"
     };
     for ev in events {
-        let evidence = serde_json::to_string(&ev.evidence).unwrap_or_else(|_| "[]".into());
-        sqlx::query(events_sql)
-            .bind(&ev.id)
-            .bind(ev.ts)
-            .bind(&ev.host_id)
-            .bind(&ev.key)
-            .bind(crate::ingest::kind_wire(&ev.kind))
-            .bind(crate::ingest::severity_wire(ev.severity))
-            .bind(&ev.summary)
-            .bind(evidence)
-            .bind(now_ms())
-            .execute(&mut *tx)
-            .await?;
+        crate::ingest::insert_event(&mut tx, pg, ev).await?;
         let res = sqlx::query(links_sql)
             .bind(incident_id)
             .bind(&ev.id)
@@ -369,29 +361,47 @@ pub async fn fetch_timeline(
     pool: &sqlx::AnyPool,
     incident_id: &str,
 ) -> Result<Vec<IncidentEvent>, sqlx::Error> {
-    let rows = sqlx::query_as::<_, (String, i64, String, String, String, String, String)>(
-        "SELECT e.id, e.ts, e.host_id, e.kind, e.severity, e.summary, e.evidence_json
-         FROM incident_events ie JOIN events e ON e.id = ie.event_id
+    let rows = sqlx::query_as::<_, crate::events::EventRow>(&format!(
+        "SELECT {} FROM incident_events ie JOIN events e ON e.id = ie.event_id
          WHERE ie.incident_id = $1
          ORDER BY e.ts DESC, e.id",
-    )
+        crate::events::EVENT_COLS
+    ))
     .bind(incident_id)
     .fetch_all(pool)
     .await?;
     Ok(rows
         .into_iter()
-        .map(
-            |(id, ts, host_id, kind, severity, summary, evidence_json)| IncidentEvent {
-                id,
-                ts,
-                host_id,
-                kind: kind.into(),
-                severity,
-                summary,
-                evidence: serde_json::from_str(&evidence_json).unwrap_or_default(),
-            },
-        )
+        .filter_map(crate::events::row_to_event)
+        .map(|e| IncidentEvent {
+            kind: e.kind.to_string(),
+            severity: crate::ingest::severity_wire(e.severity),
+            evidence: e
+                .evidence
+                .iter()
+                .filter_map(|ev| serde_json::to_value(ev).ok())
+                .collect(),
+            id: e.id,
+            ts: e.ts,
+            host_id: e.host_id,
+            summary: e.summary,
+            source: e.source,
+            environment: e.environment,
+            subject: e.subject,
+            attributes: e.attributes,
+            measurements: e.measurements,
+        })
         .collect())
+}
+
+/// Record which rule opened an incident (first writer wins).
+pub async fn set_rule_id(pool: &sqlx::AnyPool, id: &str, rule_id: &str) -> Result<(), sqlx::Error> {
+    sqlx::query("UPDATE incidents SET rule_id = $2 WHERE id = $1 AND rule_id = ''")
+        .bind(id)
+        .bind(rule_id)
+        .execute(pool)
+        .await?;
+    Ok(())
 }
 
 #[cfg(test)]

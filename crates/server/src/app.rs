@@ -3,7 +3,8 @@ use axum::routing::{get, post};
 use axum::{Json, Router};
 
 use crate::api_incidents;
-use crate::auth::{require_token, Auth};
+use crate::api_runner;
+use crate::auth::{require_runner, require_token, Auth};
 use crate::config::ServerConfig;
 use crate::correlation::{merged_rules, Rule};
 use crate::db;
@@ -33,6 +34,8 @@ pub struct AppState {
     pub notify_rx: Option<tokio::sync::mpsc::Receiver<serde_json::Value>>,
     /// Per-host watchdog episode state (heartbeat-missing emission dedup).
     pub watchdog: std::sync::Arc<std::sync::Mutex<crate::watchdog::WatchdogState>>,
+    /// Woken when an agent task is queued (runner long-polls wait on it).
+    pub task_notify: std::sync::Arc<tokio::sync::Notify>,
 }
 
 impl Clone for AppState {
@@ -50,6 +53,7 @@ impl Clone for AppState {
             // carry a None so the original keeps the only receiver.
             notify_rx: None,
             watchdog: self.watchdog.clone(),
+            task_notify: self.task_notify.clone(),
         }
     }
 }
@@ -76,6 +80,7 @@ impl AppState {
             rules,
             max_body_bytes: crate::ingest::MAX_BODY_BYTES,
             watchdog,
+            task_notify: Default::default(),
         }
     }
 
@@ -110,22 +115,51 @@ pub async fn build_app(state: AppState) -> Router {
     let auth = Auth {
         shared: state.cfg.auth_token.clone(),
         hosts: std::sync::Arc::new(state.cfg.host_tokens.clone()),
+        sources: std::sync::Arc::new(state.cfg.event_sources.clone()),
+        runners: std::sync::Arc::new(state.cfg.runners.clone()),
     };
-    Router::new()
+    let api = Router::new()
         .route("/v1/ping", get(ping))
         .route("/v1/telemetry", post(ingest::ingest))
         .route("/v1/errors", post(crate::errors::handle_errors))
         .route("/v1/heartbeat", post(hosts::heartbeat))
         .route("/v1/hosts", get(hosts::list_hosts))
-        .route("/v1/events", get(events::list_events))
+        .route(
+            "/v1/events",
+            get(events::list_events).post(crate::custom_events::ingest_event),
+        )
         .route("/v1/incidents", get(api_incidents::list_incidents))
         .route("/v1/incidents/{id}", get(api_incidents::get_incident))
+        .route(
+            "/v1/incidents/{id}/events",
+            get(api_incidents::incident_events),
+        )
         .route(
             "/v1/incidents/{id}/{action}",
             post(api_incidents::set_status_route),
         )
-        .layer(middleware::from_fn_with_state(auth, require_token))
-        .with_state(state)
+        .layer(middleware::from_fn_with_state(auth.clone(), require_token));
+    // runners: outbound-only long-poll protocol, runner tokens only
+    let runner = Router::new()
+        .route("/v1/runners/register", post(api_runner::hello))
+        .route("/v1/runners/heartbeat", post(api_runner::hello))
+        .route("/v1/agent-tasks/next", get(api_runner::next))
+        .route(
+            "/v1/agent-tasks/{id}/heartbeat",
+            post(api_runner::task_heartbeat),
+        )
+        .route("/v1/agent-tasks/{id}/started", post(api_runner::started))
+        .route("/v1/agent-tasks/{id}/complete", post(api_runner::complete))
+        .route("/v1/agent-tasks/{id}/fail", post(api_runner::fail))
+        .layer(middleware::from_fn_with_state(auth, require_runner));
+    // the working agent: per-task context tokens (checked in the handlers)
+    let context = Router::new()
+        .route("/v1/agent-tasks/{id}/context", get(api_runner::context))
+        .route(
+            "/v1/agent-tasks/{id}/events",
+            get(api_runner::context_events),
+        );
+    api.merge(runner).merge(context).with_state(state)
 }
 
 async fn ping() -> Json<serde_json::Value> {
