@@ -547,17 +547,21 @@ pub enum TaskOutcome {
     Abandoned,
 }
 
+/// Report an execution failure (retryable: runner/CLI/infra problem).
+fn fail_task(client: &Client, id: &str, error: &str, retryable: bool) -> TaskOutcome {
+    eprintln!("task {id}: failed: {error}");
+    let _ = client.fail(id, error, retryable);
+    TaskOutcome::Failed(error.to_string())
+}
+
 /// Execute one claimed task end to end and report it.
 pub fn run_task(cfg: &RunnerConfig, client: &Client, task: &Value) -> TaskOutcome {
     let id = task["task_id"].as_str().unwrap_or_default().to_string();
     let profile_name = task["profile"].as_str().unwrap_or_default();
-    let report_fail = |error: &str, retryable: bool| {
-        eprintln!("task {id}: failed: {error}");
-        let _ = client.fail(&id, error, retryable);
-        TaskOutcome::Failed(error.to_string())
-    };
     let Some(profile) = cfg.profiles.get(profile_name) else {
-        return report_fail(
+        return fail_task(
+            client,
+            &id,
             &format!(
                 "profile {profile_name:?} is not configured on runner {}",
                 cfg.runner_id
@@ -605,19 +609,14 @@ fn execute(
     profile: &Profile,
     cancel: &AtomicBool,
 ) -> TaskOutcome {
-    let report_fail = |error: &str, retryable: bool| {
-        eprintln!("task {id}: failed: {error}");
-        let _ = client.fail(id, error, retryable);
-        TaskOutcome::Failed(error.to_string())
-    };
     let token = task["context_token"].as_str().unwrap_or_default();
     let context = match client.context(id, token) {
         Ok(c) => c,
-        Err(e) => return report_fail(&format!("cannot fetch task context: {e}"), true),
+        Err(e) => return fail_task(client, id, &format!("cannot fetch task context: {e}"), true),
     };
     let ws = match prepare_workspace(cfg, profile, id) {
         Ok(ws) => ws,
-        Err(e) => return report_fail(&e, false),
+        Err(e) => return fail_task(client, id, &e, false),
     };
     let extra = profile
         .prompt_file
@@ -675,7 +674,7 @@ fn execute(
     );
     let run = match run {
         Ok(r) => r,
-        Err(e) => return report_fail(&e, false),
+        Err(e) => return fail_task(client, id, &e, false),
     };
     let _ = std::fs::write(
         logs.join(format!("{}.log", sanitize(id))),
@@ -688,7 +687,9 @@ fn execute(
         return TaskOutcome::Abandoned;
     }
     if run.timed_out {
-        return report_fail(
+        return fail_task(
+            client,
+            id,
             &format!("agent timed out after {}s", profile.timeout_secs),
             true,
         );
@@ -696,7 +697,7 @@ fn execute(
     let text = if profile.adapter == "claude-code" {
         match prompt::unwrap_claude_output(&run.stdout) {
             Ok(t) => t,
-            Err(e) => return report_fail(&e, true),
+            Err(e) => return fail_task(client, id, &e, true),
         }
     } else {
         run.stdout.clone()
@@ -704,7 +705,9 @@ fn execute(
     let result = match prompt::parse_result(&text) {
         Some(r) => r,
         None if !run.success => {
-            return report_fail(
+            return fail_task(
+                client,
+                id,
                 &format!(
                     "agent exited with an error: {}",
                     tail(run.stderr.trim(), 500)

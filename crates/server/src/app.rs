@@ -14,6 +14,7 @@ use crate::ingest;
 use crate::notifier::NOTIFY_QUEUE_CAP;
 use crate::probes::Checker;
 
+#[derive(Clone)]
 pub struct AppState {
     pub pool: sqlx::AnyPool,
     pub cfg: ServerConfig,
@@ -25,40 +26,25 @@ pub struct AppState {
     /// the drain POST 400 and the agent would drop the whole file as
     /// "permanent".
     pub max_body_bytes: usize,
-    pub notify: crate::notify::NotifyConfig,
     /// Undelivered notifications awaiting retry (drained by the retry loop).
     pub notify_queue: std::sync::Arc<std::sync::Mutex<crate::notify::RetryQueue>>,
     /// Incident JSON enqueued by the correlation runner for the notifier task.
     pub notify_tx: tokio::sync::mpsc::Sender<serde_json::Value>,
-    /// Receiver taken by main to spawn the notifier; None after spawn.
-    pub notify_rx: Option<tokio::sync::mpsc::Receiver<serde_json::Value>>,
+    /// Receiver for the notifier task — taken once (`take_notify_rx`).
+    notify_rx:
+        std::sync::Arc<std::sync::Mutex<Option<tokio::sync::mpsc::Receiver<serde_json::Value>>>>,
     /// Per-host watchdog episode state (heartbeat-missing emission dedup).
     pub watchdog: std::sync::Arc<std::sync::Mutex<crate::watchdog::WatchdogState>>,
     /// Woken when an agent task is queued (runner long-polls wait on it).
     pub task_notify: std::sync::Arc<tokio::sync::Notify>,
 }
 
-impl Clone for AppState {
-    fn clone(&self) -> Self {
-        AppState {
-            pool: self.pool.clone(),
-            cfg: self.cfg.clone(),
-            checker: self.checker.clone(),
-            rules: self.rules.clone(),
-            max_body_bytes: self.max_body_bytes,
-            notify: self.notify.clone(),
-            notify_queue: self.notify_queue.clone(),
-            notify_tx: self.notify_tx.clone(),
-            // The receiver is single-use (spawned once by main); clones
-            // carry a None so the original keeps the only receiver.
-            notify_rx: None,
-            watchdog: self.watchdog.clone(),
-            task_notify: self.task_notify.clone(),
-        }
-    }
-}
-
 impl AppState {
+    /// The notifier's receiver; Some exactly once per state (and its clones).
+    pub fn take_notify_rx(&self) -> Option<tokio::sync::mpsc::Receiver<serde_json::Value>> {
+        self.notify_rx.lock().unwrap().take()
+    }
+
     pub async fn new(pool: sqlx::AnyPool, cfg: ServerConfig) -> Self {
         db::init_schema(&pool).await.expect("schema init failed");
         let rules = merged_rules(&cfg.rules);
@@ -68,12 +54,11 @@ impl AppState {
         ));
         let (notify_tx, notify_rx) = tokio::sync::mpsc::channel(NOTIFY_QUEUE_CAP);
         AppState {
-            notify: cfg.notify.clone(),
             notify_queue: std::sync::Arc::new(std::sync::Mutex::new(
                 crate::notify::RetryQueue::new(3),
             )),
             notify_tx,
-            notify_rx: Some(notify_rx),
+            notify_rx: std::sync::Arc::new(std::sync::Mutex::new(Some(notify_rx))),
             pool,
             cfg,
             checker,

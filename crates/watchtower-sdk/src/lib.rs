@@ -135,74 +135,27 @@ mod tests {
 
     #[test]
     fn capture_posts_expected_payload() {
-        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-        let addr = listener.local_addr().unwrap();
-        let handle = std::thread::spawn(move || {
-            for _ in 0..100 {
-                if let Ok((mut stream, _)) = listener
-                    .set_nonblocking(true)
-                    .and_then(|_| listener.accept())
-                {
-                    listener.set_nonblocking(false).ok();
-                    let mut buf = Vec::new();
-                    let mut tmp = [0u8; 4096];
-                    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
-                    while std::time::Instant::now() < deadline {
-                        match stream.read(&mut tmp) {
-                            Ok(0) | Err(_) => break,
-                            Ok(n) => buf.extend_from_slice(&tmp[..n]),
-                        }
-                        let text = String::from_utf8_lossy(&buf);
-                        if let Some(head_end) = text.find("\r\n\r\n") {
-                            let content_len = text[..head_end]
-                                .lines()
-                                .find_map(|l| l.strip_prefix("Content-Length:"))
-                                .and_then(|v| v.trim().parse::<usize>().ok())
-                                .unwrap_or(0);
-                            if head_end + 4 + content_len <= buf.len() {
-                                break;
-                            }
-                        }
-                        std::thread::sleep(std::time::Duration::from_millis(5));
-                    }
-                    let req = String::from_utf8_lossy(&buf).to_string();
-                    let body_start = req.find("\r\n\r\n").unwrap() + 4;
-                    let body: serde_json::Value = serde_json::from_str(&req[body_start..]).unwrap();
-                    assert!(
-                        req.contains("POST /v1/errors HTTP/1.1"),
-                        "method+path: {}",
-                        req
-                    );
-                    assert!(req.contains("Authorization: Bearer tok"), "auth header");
-                    assert_eq!(body["host_id"], "h-1");
-                    assert_eq!(body["service"], "api");
-                    assert_eq!(body["exception"]["type"], "ValueError");
-                    assert_eq!(body["exception"]["level"], "error");
-                    assert_eq!(body["exception"]["frames"][0]["file"], "app.rs");
-                    assert_eq!(body["exception"]["frames"][0]["line"], 42);
-                    let resp = "HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
-                    stream.write_all(resp.as_bytes()).unwrap();
-                    return;
-                }
-                std::thread::sleep(std::time::Duration::from_millis(20));
-            }
-            panic!("no request within 2s");
-        });
+        let (url, handle) = mock();
         let client = Client {
-            endpoint: format!("http://{}", addr),
+            endpoint: url,
             token: "tok".into(),
             host_id: "h-1".into(),
             service: "api".into(),
             environment: "prod".into(),
         };
-        let ok = client.capture(
-            "error",
-            "ValueError",
-            "bad input",
-            &[("app.rs".into(), 42, "validate".into())],
-        );
-        assert!(ok);
-        handle.join().unwrap();
+        let frames = [("app.rs".into(), 42, "validate".into())];
+        assert!(client.capture("error", "ValueError", "bad input", &frames));
+        let req = handle.join().unwrap();
+        assert!(req.starts_with("POST /v1/errors HTTP/1.1"), "{req}");
+        assert!(req.contains("Authorization: Bearer tok"), "auth header");
+        let body: serde_json::Value =
+            serde_json::from_str(&req[req.find("\r\n\r\n").unwrap() + 4..]).unwrap();
+        assert_eq!(body["host_id"], "h-1");
+        assert_eq!(body["service"], "api");
+        assert_eq!(body["exception"]["type"], "ValueError");
+        assert_eq!(body["exception"]["level"], "error");
+        assert_eq!(body["exception"]["frames"][0]["file"], "app.rs");
+        assert_eq!(body["exception"]["frames"][0]["line"], 42);
     }
 
     #[test]
