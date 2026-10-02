@@ -147,20 +147,22 @@ mod tests {
                 ts: 999_999_700_000,
                 host_id: "h-1".into(),
                 key: "fim:/etc/myapp/config.yml".into(),
-                kind: EventKind::FileChanged,
+                kind: EventKind::FileChanged.into(),
                 severity: Severity::Warning,
                 summary: "config changed".into(),
                 evidence: vec![],
+                ..Default::default()
             },
             AgentEvent {
                 id: "e-2".into(),
                 ts: 999_999_800_000,
                 host_id: "h-1".into(),
                 key: "svc:myapp.service".into(),
-                kind: EventKind::ServiceFailed,
+                kind: EventKind::ServiceFailed.into(),
                 severity: Severity::Critical,
                 summary: "myapp failed".into(),
                 evidence: vec![],
+                ..Default::default()
             },
         ];
         crate::ingest::store_events(&state.pool, &evs)

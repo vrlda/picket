@@ -192,7 +192,7 @@ pub async fn link_events(
             .bind(ev.ts)
             .bind(&ev.host_id)
             .bind(&ev.key)
-            .bind(crate::ingest::kind_wire(ev.kind))
+            .bind(crate::ingest::kind_wire(&ev.kind))
             .bind(crate::ingest::severity_wire(ev.severity))
             .bind(&ev.summary)
             .bind(evidence)
@@ -385,7 +385,7 @@ pub async fn fetch_timeline(
                 id,
                 ts,
                 host_id,
-                kind,
+                kind: kind.into(),
                 severity,
                 summary,
                 evidence: serde_json::from_str(&evidence_json).unwrap_or_default(),
@@ -416,10 +416,11 @@ mod tests {
             ts,
             host_id: "h-1".into(),
             key: format!("k:{}", id),
-            kind,
+            kind: kind.into(),
             severity: sev,
             summary: format!("event {}", id),
             evidence: vec![],
+            ..Default::default()
         }
     }
 

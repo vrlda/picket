@@ -83,7 +83,7 @@ impl ContainerTracker {
                         ts,
                         host_id: host_id.into(),
                         key: format!("docker:{}", c.name),
-                        kind: EventKind::ContainerStopped,
+                        kind: EventKind::ContainerStopped.into(),
                         severity: Severity::Warning,
                         summary: format!("container {} stopped ({})", c.name, c.image),
                         evidence: vec![Evidence {
@@ -91,6 +91,7 @@ impl ContainerTracker {
                             source: "docker".into(),
                             detail: format!("Container={} State={}", c.name, c.state),
                         }],
+                        ..Default::default()
                     });
                     self.restarting_count.remove(&c.name);
                 }
@@ -105,7 +106,7 @@ impl ContainerTracker {
                         ts,
                         host_id: host_id.into(),
                         key: format!("docker:{}", c.name),
-                        kind: EventKind::ContainerCrashLoop,
+                        kind: EventKind::ContainerCrashLoop.into(),
                         severity: Severity::Critical,
                         summary: format!("container {} is crash-looping", c.name),
                         evidence: vec![Evidence {
@@ -113,6 +114,7 @@ impl ContainerTracker {
                             source: "docker".into(),
                             detail: format!("Container={} RestartCount={}", c.name, n),
                         }],
+                        ..Default::default()
                     });
                     self.restarting_count.remove(&c.name); // episode resets
                 }
@@ -133,7 +135,7 @@ impl ContainerTracker {
                             ts,
                             host_id: host_id.into(),
                             key: format!("docker:{}", c.name),
-                            kind: EventKind::ContainerCrashLoop,
+                            kind: EventKind::ContainerCrashLoop.into(),
                             severity: Severity::Critical,
                             summary: format!("container {} is crash-looping", c.name),
                             evidence: vec![Evidence {
@@ -141,6 +143,7 @@ impl ContainerTracker {
                                 source: "docker".into(),
                                 detail: format!("Container={} RestartCount={}", c.name, *restarts),
                             }],
+                            ..Default::default()
                         });
                         self.restarting_count.remove(&c.name);
                         self.prev_restart_n.remove(&c.name);

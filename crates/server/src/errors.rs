@@ -152,7 +152,7 @@ pub async fn handle_errors(
         ts,
         host_id,
         key,
-        kind: EventKind::AppException,
+        kind: EventKind::AppException.into(),
         severity,
         summary: if payload.exception.message.is_empty() {
             payload.exception.kind.clone()
@@ -177,6 +177,7 @@ pub async fn handle_errors(
                 ),
             },
         ],
+        ..Default::default()
     };
     crate::ingest::store_events(&state.pool, &[ev])
         .await

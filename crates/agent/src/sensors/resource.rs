@@ -46,7 +46,7 @@ fn event(
         ts,
         host_id: host.into(),
         key,
-        kind,
+        kind: kind.into(),
         severity: sev,
         summary,
         evidence: vec![Evidence {
@@ -54,6 +54,7 @@ fn event(
             source: "procfs".into(),
             detail,
         }],
+        ..Default::default()
     }
 }
 

@@ -27,6 +27,7 @@ async fn postgres_schema_and_round_trip() {
         severity: wt_common::Severity::Critical,
         summary: "pg test".into(),
         evidence: vec![],
+        ..Default::default()
     };
     watchtower_server::ingest::store_events(&pool, &[ev])
         .await
@@ -46,6 +47,7 @@ async fn postgres_schema_and_round_trip() {
         severity: wt_common::Severity::Critical,
         summary: "pg test".into(),
         evidence: vec![],
+        ..Default::default()
     };
     watchtower_server::ingest::store_events(&pool, &[ev2])
         .await
@@ -77,6 +79,7 @@ async fn postgres_schema_and_round_trip() {
         severity: wt_common::Severity::Warning,
         summary: "s".into(),
         evidence: vec![],
+        ..Default::default()
     };
     watchtower_server::incidents::link_events(&pool, &inc.id, &[ev3])
         .await

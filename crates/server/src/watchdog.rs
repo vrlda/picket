@@ -42,7 +42,7 @@ pub async fn watchdog_scan(state: &AppState, now: i64) -> Result<Vec<AgentEvent>
                     ts: now,
                     host_id: host_id.clone(),
                     key: format!("heartbeat:{}", host_id),
-                    kind: EventKind::AgentHeartbeatMissing,
+                    kind: EventKind::AgentHeartbeatMissing.into(),
                     severity: Severity::Critical,
                     summary: format!(
                         "{} stopped reporting (last heartbeat {}s ago)",
@@ -54,6 +54,7 @@ pub async fn watchdog_scan(state: &AppState, now: i64) -> Result<Vec<AgentEvent>
                         source: "watchdog".into(),
                         detail: format!("LastSeen={} GraceSecs={}", last_seen, grace / 1000),
                     }],
+                    ..Default::default()
                 });
             }
         } else {
@@ -71,7 +72,7 @@ pub async fn watchdog_scan(state: &AppState, now: i64) -> Result<Vec<AgentEvent>
                 ts: now,
                 host_id: host_id.clone(),
                 key: format!("queue:{}", host_id),
-                kind: EventKind::AgentQueueGrowing,
+                kind: EventKind::AgentQueueGrowing.into(),
                 severity: Severity::Warning,
                 summary: format!(
                     "{} telemetry queue is growing ({} events)",
@@ -82,6 +83,7 @@ pub async fn watchdog_scan(state: &AppState, now: i64) -> Result<Vec<AgentEvent>
                     source: "watchdog".into(),
                     detail: format!("QueueLen={} Threshold={}", queue_len, queue_threshold),
                 }],
+                ..Default::default()
             });
         } else if queue_len <= queue_threshold {
             // queue recovered — the episode is over

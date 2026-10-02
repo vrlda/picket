@@ -88,7 +88,7 @@ pub fn disk_events(
                 ts,
                 host_id: host_id.into(),
                 key: format!("disk:{}", m.mount_point),
-                kind: EventKind::DiskHigh,
+                kind: EventKind::DiskHigh.into(),
                 severity: sev,
                 summary: format!("disk usage at {:.0}% on {}", disk, m.mount_point),
                 evidence: vec![Evidence {
@@ -99,6 +99,7 @@ pub fn disk_events(
                         m.mount_point, disk, total
                     ),
                 }],
+                ..Default::default()
             });
         }
         let inodes = usage_pct(files, ffree);
@@ -108,7 +109,7 @@ pub fn disk_events(
                 ts,
                 host_id: host_id.into(),
                 key: format!("inode:{}", m.mount_point),
-                kind: EventKind::InodeHigh,
+                kind: EventKind::InodeHigh.into(),
                 severity: Severity::Critical,
                 summary: format!("inode usage at {:.0}% on {}", inodes, m.mount_point),
                 evidence: vec![Evidence {
@@ -116,6 +117,7 @@ pub fn disk_events(
                     source: "disk".into(),
                     detail: format!("Mount={} InodePct={:.1}", m.mount_point, inodes),
                 }],
+                ..Default::default()
             });
         }
         if ro_transition(ro_baseline, &m.mount_point, read_only) {
@@ -124,7 +126,7 @@ pub fn disk_events(
                 ts,
                 host_id: host_id.into(),
                 key: format!("fsro:{}", m.mount_point),
-                kind: EventKind::FsReadOnly,
+                kind: EventKind::FsReadOnly.into(),
                 severity: Severity::Critical,
                 summary: format!("filesystem {} went read-only", m.mount_point),
                 evidence: vec![Evidence {
@@ -132,6 +134,7 @@ pub fn disk_events(
                     source: "disk".into(),
                     detail: format!("Mount={}", m.mount_point),
                 }],
+                ..Default::default()
             });
         }
     }

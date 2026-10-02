@@ -51,7 +51,7 @@ pub fn change_event(path: &str, action: &str, ts: i64, host_id: &str) -> AgentEv
         ts,
         host_id: host_id.into(),
         key: format!("fim:{}", path),
-        kind: EventKind::FileChanged,
+        kind: EventKind::FileChanged.into(),
         severity: Severity::Warning,
         summary: format!("{} changed ({})", path, action),
         evidence: vec![Evidence {
@@ -59,6 +59,7 @@ pub fn change_event(path: &str, action: &str, ts: i64, host_id: &str) -> AgentEv
             source: "fim".into(),
             detail: format!("Action={}", action),
         }],
+        ..Default::default()
     }
 }
 

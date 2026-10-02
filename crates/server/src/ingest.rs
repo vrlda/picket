@@ -3,7 +3,7 @@ use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::Json;
 use serde_json::json;
-use wt_common::{AgentEvent, EventKind, Severity};
+use wt_common::{AgentEvent, EventType, Severity};
 
 use crate::api::TelemetryPayload;
 #[cfg(test)]
@@ -71,28 +71,9 @@ pub async fn store_events(
 ) -> Result<(u64, u64), sqlx::Error> {
     let mut tx = pool.begin().await?;
     let mut accepted = 0u64;
+    let pg = crate::db::is_postgres(pool);
     for ev in batch {
-        let evidence = serde_json::to_string(&ev.evidence).unwrap_or_else(|_| "[]".into());
-        let sql = if crate::db::is_postgres(pool) {
-            "INSERT INTO events (id, ts, host_id, key, kind, severity, summary, evidence_json, created_at)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) ON CONFLICT (id) DO NOTHING"
-        } else {
-            "INSERT OR IGNORE INTO events (id, ts, host_id, key, kind, severity, summary, evidence_json, created_at)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)"
-        };
-        let res = sqlx::query(sql)
-            .bind(&ev.id)
-            .bind(ev.ts)
-            .bind(&ev.host_id)
-            .bind(&ev.key)
-            .bind(kind_wire(ev.kind))
-            .bind(severity_wire(ev.severity))
-            .bind(&ev.summary)
-            .bind(evidence)
-            .bind(now_ms())
-            .execute(&mut *tx)
-            .await?;
-        if res.rows_affected() > 0 {
+        if insert_event(&mut tx, pg, ev).await? {
             accepted += 1;
         }
     }
@@ -101,13 +82,48 @@ pub async fn store_events(
     Ok((accepted, total.saturating_sub(accepted)))
 }
 
-/// PascalCase wire strings, identical to the serde JSON representation
-/// (server-generated events go through the same store).
-pub(crate) fn kind_wire(kind: EventKind) -> String {
-    serde_json::to_string(&kind)
-        .unwrap_or_default()
-        .trim_matches('"')
-        .to_string()
+/// Insert one event unless its id already exists (idempotent per id).
+/// Returns true when a row was written. Shared by ingest and incident
+/// linking so every event row carries the same columns.
+pub(crate) async fn insert_event(
+    tx: &mut sqlx::Transaction<'_, sqlx::Any>,
+    postgres: bool,
+    ev: &AgentEvent,
+) -> Result<bool, sqlx::Error> {
+    let sql = if postgres {
+        "INSERT INTO events (id, ts, host_id, key, kind, severity, summary, evidence_json,
+             source, environment, subject, attributes_json, measurements_json, created_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
+         ON CONFLICT (id) DO NOTHING"
+    } else {
+        "INSERT OR IGNORE INTO events (id, ts, host_id, key, kind, severity, summary, evidence_json,
+             source, environment, subject, attributes_json, measurements_json, created_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)"
+    };
+    let res = sqlx::query(sql)
+        .bind(&ev.id)
+        .bind(ev.ts)
+        .bind(&ev.host_id)
+        .bind(&ev.key)
+        .bind(kind_wire(&ev.kind))
+        .bind(severity_wire(ev.severity))
+        .bind(&ev.summary)
+        .bind(serde_json::to_string(&ev.evidence).unwrap_or_else(|_| "[]".into()))
+        .bind(&ev.source)
+        .bind(&ev.environment)
+        .bind(&ev.subject)
+        .bind(serde_json::to_string(&ev.attributes).unwrap_or_else(|_| "{}".into()))
+        .bind(serde_json::to_string(&ev.measurements).unwrap_or_else(|_| "{}".into()))
+        .bind(now_ms())
+        .execute(&mut **tx)
+        .await?;
+    Ok(res.rows_affected() > 0)
+}
+
+/// Wire string of an event kind: PascalCase for built-ins (identical to the
+/// serde JSON representation), the name itself for custom kinds.
+pub(crate) fn kind_wire(kind: &EventType) -> String {
+    kind.to_string()
 }
 
 pub(crate) fn severity_wire(sev: Severity) -> String {

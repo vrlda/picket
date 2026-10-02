@@ -75,7 +75,7 @@ impl NetState {
                 ts,
                 host_id: host_id.into(),
                 key: format!("port:{}", new),
-                kind: EventKind::NewListeningPort,
+                kind: EventKind::NewListeningPort.into(),
                 severity: Severity::Warning,
                 summary: format!("new listening port: {}", new),
                 evidence: vec![Evidence {
@@ -83,6 +83,7 @@ impl NetState {
                     source: "netflow".into(),
                     detail: format!("Entry={}", new),
                 }],
+                ..Default::default()
             });
         }
         let mut udp_now = HashSet::new();
@@ -104,7 +105,7 @@ impl NetState {
                     ts,
                     host_id: host_id.into(),
                     key: format!("port:{}", key),
-                    kind: EventKind::NewListeningPort,
+                    kind: EventKind::NewListeningPort.into(),
                     severity: Severity::Warning,
                     summary: format!("new listening port: {}", key),
                     evidence: vec![Evidence {
@@ -112,6 +113,7 @@ impl NetState {
                         source: "netflow".into(),
                         detail: format!("Entry={}", key),
                     }],
+                    ..Default::default()
                 });
             }
         }
@@ -122,7 +124,7 @@ impl NetState {
                 ts,
                 host_id: host_id.into(),
                 key: format!("net:out:{}", new),
-                kind: EventKind::NewOutboundConnection,
+                kind: EventKind::NewOutboundConnection.into(),
                 severity: Severity::Warning,
                 summary: format!("new outbound connection to {}", new),
                 evidence: vec![Evidence {
@@ -130,6 +132,7 @@ impl NetState {
                     source: "netflow".into(),
                     detail: format!("RemoteIp={}", new),
                 }],
+                ..Default::default()
             });
         }
 
@@ -140,7 +143,7 @@ impl NetState {
                 ts,
                 host_id: host_id.into(),
                 key: "net:rate".into(),
-                kind: EventKind::ConnectionRateSpike,
+                kind: EventKind::ConnectionRateSpike.into(),
                 severity: Severity::Warning,
                 summary: format!("established-connection count spiked to {}", count),
                 evidence: vec![Evidence {
@@ -148,6 +151,7 @@ impl NetState {
                     source: "netflow".into(),
                     detail: format!("Established={}", count),
                 }],
+                ..Default::default()
             });
         }
 
@@ -172,7 +176,7 @@ impl NetState {
                 ts,
                 host_id: host_id.into(),
                 key: "net:scan".into(),
-                kind: EventKind::PortScanSpike,
+                kind: EventKind::PortScanSpike.into(),
                 severity: Severity::Warning,
                 summary: format!(
                     "{} distinct remote connections within {}s — possible port scan",
@@ -184,6 +188,7 @@ impl NetState {
                     source: "netflow".into(),
                     detail: format!("DistinctPairs={} WindowMs={}", distinct, scan_window_ms),
                 }],
+                ..Default::default()
             });
         }
 

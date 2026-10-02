@@ -1,14 +1,21 @@
 use serde::{Deserialize, Serialize};
-use wt_common::{AgentEvent, EventKind, Severity};
+use wt_common::{AgentEvent, EventKind, EventType, Severity};
 
-/// One correlation rule: a trigger kind plus supporting kinds within a
-/// sliding window per host.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// One correlation rule.
+///
+/// Legacy rules (built-in kinds, no count/group_by/where) match a trigger
+/// plus supporting kinds within a sliding window per host — unchanged.
+///
+/// Threshold rules (`count`, `group_by` or `where` set, or a custom-kind
+/// trigger) count matching trigger events per group across all hosts: at
+/// least `count` events satisfying every `where` condition within the
+/// window open one incident per group key.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Rule {
     pub id: String,
-    pub trigger: EventKind,
+    pub trigger: EventType,
     #[serde(default)]
-    pub supporting: Vec<EventKind>,
+    pub supporting: Vec<EventType>,
     #[serde(default = "default_min_supporting")]
     pub min_supporting: u32,
     #[serde(default = "default_window")]
@@ -19,16 +26,58 @@ pub struct Rule {
     pub headline: String,
     #[serde(default)]
     pub cause: String,
-    #[serde(default)]
+    /// Human remediation suggestions shown with the incident (also accepted
+    /// as `recommended_actions`). Not to be confused with `dispatch`.
+    #[serde(default, alias = "recommended_actions")]
     pub actions: Vec<String>,
     /// Kinds that join the timeline when present but do NOT count toward
     /// min_supporting (evidence only — e.g. a probe failure riding along
     /// with a config-change outage must not trigger the config rule alone).
     #[serde(default)]
-    pub absorb_only: Vec<EventKind>,
+    pub absorb_only: Vec<EventType>,
+    /// Threshold rules: matching trigger events needed per group within the
+    /// window (0 = 1).
+    #[serde(default)]
+    pub count: u32,
+    /// Threshold rules: event fields whose values split incidents, e.g.
+    /// ["attributes.merchant_id"].
+    #[serde(default)]
+    pub group_by: Vec<String>,
+    /// Threshold rules: every condition must hold for an event to count.
+    #[serde(default, rename = "where")]
+    pub conditions: Vec<crate::rules::Condition>,
+    /// What to do with the incident: notify channels and/or dispatch an
+    /// agent. Empty = the severity routing in [notify.routing].
+    #[serde(default)]
+    pub dispatch: Vec<crate::dispatch::DispatchAction>,
+    /// Automatic resolution once the trigger condition has been clear for
+    /// the recovery window.
+    #[serde(default)]
+    pub recovery: Option<Recovery>,
     /// The fallback rule matches no trigger; handled separately.
     #[serde(skip)]
     pub is_fallback: bool,
+}
+
+/// `[rule.recovery]`: the incident resolves itself (and an agent fix counts
+/// as verified) once no matching event arrived for `window_secs`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Recovery {
+    pub window_secs: i64,
+}
+
+impl Rule {
+    /// Threshold semantics (see the type docs) instead of legacy matching.
+    pub fn is_threshold(&self) -> bool {
+        self.count > 0
+            || !self.group_by.is_empty()
+            || !self.conditions.is_empty()
+            || self.trigger.is_custom()
+    }
+}
+
+fn kinds(k: &[EventKind]) -> Vec<EventType> {
+    k.iter().map(|k| (*k).into()).collect()
 }
 
 fn default_min_supporting() -> u32 {
@@ -55,18 +104,18 @@ pub fn default_rules() -> Vec<Rule> {
     vec![
         Rule {
             id: "config_change_outage".into(),
-            trigger: EventKind::ServiceFailed,
-            supporting: vec![
+            trigger: EventKind::ServiceFailed.into(),
+            supporting: kinds(&[
                 EventKind::FileChanged,
                 EventKind::SshLogin,
                 EventKind::SudoUsed,
                 EventKind::ServiceRestarted,
                 EventKind::CpuSpike, // absorbed INTO the incident so the demo yields one notification
                 EventKind::ErrorRateSpike, // app errors join the outage narrative
-            ],
+            ]),
             // probe failure rides along as evidence; it alone must not
             // satisfy min_supporting and open a config-change incident
-            absorb_only: vec![EventKind::HostUnreachable],
+            absorb_only: kinds(&[EventKind::HostUnreachable]),
             min_supporting: 1,
             window_secs: 300,
             cooldown_secs: 600,
@@ -81,11 +130,12 @@ pub fn default_rules() -> Vec<Rule> {
                 "Verify the SSH session that preceded the change".into(),
             ],
             is_fallback: false,
+            ..Default::default()
         },
         Rule {
             id: "ssh_bruteforce".into(),
-            trigger: EventKind::SshBruteForce,
-            supporting: vec![EventKind::SshFailed],
+            trigger: EventKind::SshBruteForce.into(),
+            supporting: kinds(&[EventKind::SshFailed]),
             min_supporting: 1,
             window_secs: 300,
             cooldown_secs: 600,
@@ -98,11 +148,12 @@ pub fn default_rules() -> Vec<Rule> {
             ],
             absorb_only: vec![],
             is_fallback: false,
+            ..Default::default()
         },
         Rule {
             id: "root_login".into(),
-            trigger: EventKind::RootLogin,
-            supporting: vec![EventKind::SshLogin],
+            trigger: EventKind::RootLogin.into(),
+            supporting: kinds(&[EventKind::SshLogin]),
             min_supporting: 0,
             window_secs: 300,
             cooldown_secs: 600,
@@ -114,10 +165,11 @@ pub fn default_rules() -> Vec<Rule> {
             actions: vec!["Verify the session was authorized".into()],
             absorb_only: vec![],
             is_fallback: false,
+            ..Default::default()
         },
         Rule {
             id: "server_unreachable".into(),
-            trigger: EventKind::HostUnreachable,
+            trigger: EventKind::HostUnreachable.into(),
             supporting: vec![],
             min_supporting: 0,
             window_secs: 300,
@@ -128,6 +180,7 @@ pub fn default_rules() -> Vec<Rule> {
             actions: vec!["Check power and network".into()],
             absorb_only: vec![],
             is_fallback: false,
+            ..Default::default()
         },
         // App exceptions need no supporting evidence; the exception level
         // propagates to the incident severity (the assemble special-case)
@@ -135,7 +188,7 @@ pub fn default_rules() -> Vec<Rule> {
         // fingerprint's incident.
         Rule {
             id: "app_exception".into(),
-            trigger: EventKind::AppException,
+            trigger: EventKind::AppException.into(),
             supporting: vec![],
             min_supporting: 0,
             window_secs: 300,
@@ -146,10 +199,11 @@ pub fn default_rules() -> Vec<Rule> {
             actions: vec!["Inspect the stack trace in the incident timeline".into()],
             absorb_only: vec![],
             is_fallback: false,
+            ..Default::default()
         },
         Rule {
             id: "fallback".into(),
-            trigger: EventKind::CpuSpike, // placeholder — is_fallback handles semantics
+            trigger: EventKind::CpuSpike.into(), // placeholder — is_fallback handles semantics
             supporting: vec![],
             min_supporting: 0,
             window_secs: 300,
@@ -160,6 +214,7 @@ pub fn default_rules() -> Vec<Rule> {
             actions: vec![],
             absorb_only: vec![],
             is_fallback: true,
+            ..Default::default()
         },
     ]
 }
@@ -365,7 +420,7 @@ pub fn fallback_incidents(events: &[AgentEvent], _now: i64, host: &str) -> Vec<I
         if e.severity == Severity::Info {
             continue;
         }
-        let kind = crate::ingest::kind_wire(e.kind);
+        let kind = crate::ingest::kind_wire(&e.kind);
         out.push(IncidentDraft {
             key: format!("event:{}:{}:{}", kind, host, e.key),
             host_id: host.into(),
@@ -712,10 +767,11 @@ mod tests {
             ts,
             host_id: host.into(),
             key: key.into(),
-            kind,
+            kind: kind.into(),
             severity: sev,
             summary: format!("{} {:?}", id, kind),
             evidence: vec![],
+            ..Default::default()
         }
     }
 
@@ -909,7 +965,7 @@ actions = ["Review the change to the affected file", "Roll back the latest confi
             .find(|r| r.id == "config_change_outage")
             .unwrap();
         assert!(
-            cfg.supporting.contains(&EventKind::CpuSpike),
+            cfg.supporting.contains(&EventKind::CpuSpike.into()),
             "cpu spike absorbed so the demo yields ONE incident"
         );
     }
@@ -1115,10 +1171,11 @@ actions = ["Review the change to the affected file", "Roll back the latest confi
                 ts: *ts,
                 host_id: "h-1".into(),
                 key: key.to_string(),
-                kind: *kind,
+                kind: (*kind).into(),
                 severity: *sev,
                 summary: format!("{} {:?}", id, kind),
                 evidence: vec![],
+                ..Default::default()
             })
             .collect();
         crate::ingest::store_events(&p, &events).await.unwrap();
@@ -1351,7 +1408,9 @@ actions = ["Review the change to the affected file", "Roll back the latest confi
             .find(|r| r.id == "config_change_outage")
             .unwrap();
         // error spikes are supporting evidence for the outage rule
-        assert!(cfg_rule.supporting.contains(&EventKind::ErrorRateSpike));
+        assert!(cfg_rule
+            .supporting
+            .contains(&EventKind::ErrorRateSpike.into()));
         // container crash loops and cert expiry fall through the fallback
         for kind in [EventKind::ContainerCrashLoop, EventKind::CertExpiring] {
             let evs = vec![ev("e-1", 999_999_800_000, kind, Severity::Critical, "k:1")];
