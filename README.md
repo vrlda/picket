@@ -64,7 +64,7 @@ Pin a version (the tarball URL pattern is `<release>/download/<tag>/`; tarballs 
 named after the crate version, not the tag):
 
 ```bash
-INSTALL_URL=https://github.com/vrlda/watchtower/releases/download/v0.3.0/watchtower-0.3.0-x86_64-unknown-linux-musl.tar.gz \
+INSTALL_URL=https://github.com/vrlda/watchtower/releases/download/v0.4.0/watchtower-0.4.0-x86_64-unknown-linux-musl.tar.gz \
   INSTALL_SHA256=<hash from SHA256SUMS> \
   SERVER_URL=https://control.example.com TOKEN=secret \
   sudo bash scripts/install.sh
