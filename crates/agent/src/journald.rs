@@ -154,9 +154,6 @@ mod tests {
     struct FakeRunner;
 
     impl crate::cmd::CommandRunner for FakeRunner {
-        fn program(&self) -> &'static str {
-            "journalctl"
-        }
         fn run(&self, args: &[&str]) -> Result<String, String> {
             assert!(args.contains(&"--since"));
             assert!(args.contains(&"@1758000000"));

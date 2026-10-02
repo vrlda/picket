@@ -140,14 +140,6 @@ impl EventType {
         Ok(EventType::Custom(s.to_string()))
     }
 
-    /// The built-in kind, if this is one.
-    pub fn builtin(&self) -> Option<EventKind> {
-        match self {
-            EventType::Builtin(k) => Some(*k),
-            EventType::Custom(_) => None,
-        }
-    }
-
     pub fn is_custom(&self) -> bool {
         matches!(self, EventType::Custom(_))
     }

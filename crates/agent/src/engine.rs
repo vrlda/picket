@@ -1501,9 +1501,6 @@ mod tests {
     }
 
     impl crate::cmd::CommandRunner for FakeSys {
-        fn program(&self) -> &'static str {
-            "journalctl"
-        }
         fn run(&self, args: &[&str]) -> Result<String, String> {
             if args.contains(&"--since") {
                 return Ok(self.journal_out.clone());

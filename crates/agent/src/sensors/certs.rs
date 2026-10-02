@@ -152,7 +152,7 @@ mod tests {
 
     #[test]
     fn scan_emits_for_expiring_cert() {
-        let runner = FakeOpenssl;
+        let runner = crate::cmd::FakeCli("notAfter=Sep 10 00:00:00 2026 GMT\n".into());
         let cfg = cfg_with(vec!["/etc/test/cert.pem".to_string()]);
         let now = wt_common::civil::parse_gm_date("Sep 1 00:00:00 2026").unwrap();
         let evs = scan_certs(
@@ -167,16 +167,5 @@ mod tests {
         assert_eq!(evs[0].kind, EventKind::CertExpiring);
         assert_eq!(evs[0].severity, Severity::Warning);
         assert_eq!(evs[0].key, "cert:/etc/test/cert.pem");
-    }
-
-    struct FakeOpenssl;
-
-    impl crate::cmd::CommandRunner for FakeOpenssl {
-        fn program(&self) -> &'static str {
-            "openssl"
-        }
-        fn run(&self, _args: &[&str]) -> Result<String, String> {
-            Ok("notAfter=Sep 10 00:00:00 2026 GMT\n".to_string())
-        }
     }
 }
