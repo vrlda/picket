@@ -100,7 +100,7 @@ impl Checker {
                 ts: now,
                 host_id: "uptime".into(),
                 key: format!("uptime:{}", probe.url),
-                kind: EventKind::HostUnreachable,
+                kind: EventKind::HostUnreachable.into(),
                 severity: Severity::Critical,
                 summary: format!(
                     "{} unreachable after {} consecutive probe failures",
@@ -114,6 +114,7 @@ impl Checker {
                         probe.url, probe.fail_threshold
                     ),
                 }],
+                ..Default::default()
             })
         } else {
             None

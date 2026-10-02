@@ -94,7 +94,8 @@ impl CrashTracker {
                         EventKind::ServiceCrashLoop
                     } else {
                         EventKind::ServiceFailed
-                    },
+                    }
+                    .into(),
                     severity: if is_loop {
                         Severity::Critical
                     } else {
@@ -116,6 +117,7 @@ impl CrashTracker {
                         source: "systemd".into(),
                         detail: format!("ActiveState=failed at t={}", ts),
                     }],
+                    ..Default::default()
                 });
             }
         }

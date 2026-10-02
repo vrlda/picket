@@ -133,13 +133,25 @@ pub async fn init_schema(pool: &sqlx::AnyPool) -> Result<(), sqlx::Error> {
     )
     .execute(pool)
     .await?;
-    ensure_column(
-        pool,
-        "hosts",
-        "queue_len",
-        "ALTER TABLE hosts ADD COLUMN queue_len BIGINT NOT NULL DEFAULT 0",
-    )
-    .await?;
+    ensure_column(pool, "hosts", "queue_len", "BIGINT NOT NULL DEFAULT 0").await?;
+    // custom/application events (POST /v1/events): structured context.
+    // Defaults keep every pre-existing row valid.
+    for (column, coltype) in [
+        ("source", "TEXT NOT NULL DEFAULT ''"),
+        ("environment", "TEXT NOT NULL DEFAULT ''"),
+        ("subject", "TEXT NOT NULL DEFAULT ''"),
+        ("attributes_json", "TEXT NOT NULL DEFAULT '{}'"),
+        ("measurements_json", "TEXT NOT NULL DEFAULT '{}'"),
+    ] {
+        ensure_column(pool, "events", column, coltype).await?;
+    }
+    sqlx::query("CREATE INDEX IF NOT EXISTS idx_events_subject ON events (subject)")
+        .execute(pool)
+        .await?;
+    sqlx::query("CREATE INDEX IF NOT EXISTS idx_events_source ON events (source)")
+        .execute(pool)
+        .await?;
+    crate::dispatch::init_schema(pool).await?;
     Ok(())
 }
 
@@ -166,18 +178,18 @@ pub async fn set_setting(pool: &sqlx::AnyPool, key: &str, value: &str) -> Result
     Ok(())
 }
 
-/// Ensure a column exists. SQLite lacks ADD COLUMN IF NOT EXISTS, so it
-/// walks PRAGMA table_info; postgres has the ANSI form.
-async fn ensure_column(
+/// Ensure a column exists (`coltype` = type + constraints, e.g.
+/// "TEXT NOT NULL DEFAULT ''"). SQLite lacks ADD COLUMN IF NOT EXISTS, so
+/// it walks PRAGMA table_info; postgres has the ANSI form.
+pub(crate) async fn ensure_column(
     pool: &sqlx::AnyPool,
     table: &str,
     column: &str,
-    ddl: &str,
+    coltype: &str,
 ) -> Result<(), sqlx::Error> {
     if is_postgres(pool) {
         sqlx::query(&format!(
-            "ALTER TABLE {} ADD COLUMN IF NOT EXISTS {} BIGINT NOT NULL DEFAULT 0",
-            table, column
+            "ALTER TABLE {table} ADD COLUMN IF NOT EXISTS {column} {coltype}"
         ))
         .execute(pool)
         .await?;
@@ -187,7 +199,11 @@ async fn ensure_column(
         .fetch_all(pool)
         .await?;
     if !rows.iter().any(|r| r.get::<String, _>("name") == column) {
-        sqlx::query(ddl).execute(pool).await?;
+        sqlx::query(&format!(
+            "ALTER TABLE {table} ADD COLUMN {column} {coltype}"
+        ))
+        .execute(pool)
+        .await?;
     }
     Ok(())
 }

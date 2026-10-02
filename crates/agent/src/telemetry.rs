@@ -260,10 +260,11 @@ mod tests {
             ts,
             host_id: "h-1".into(),
             key: "svc:nginx".into(),
-            kind: EventKind::ServiceFailed,
+            kind: EventKind::ServiceFailed.into(),
             severity: Severity::Critical,
             summary: "nginx failed".into(),
             evidence: vec![],
+            ..Default::default()
         }
     }
 

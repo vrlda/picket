@@ -2,9 +2,10 @@ use serde::{Deserialize, Serialize};
 
 pub mod civil;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "PascalCase")]
 pub enum Severity {
+    #[default]
     Info,
     Warning,
     Critical,
@@ -91,6 +92,110 @@ pub enum EventKind {
     AppException,
 }
 
+/// Event type: a built-in Watchtower kind (closed set, PascalCase on the
+/// wire, e.g. "ServiceFailed") or an application-defined custom kind (open
+/// set, dotted lowercase, e.g. "payment.request_failed"). Serialized as a
+/// plain string either way.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum EventType {
+    Builtin(EventKind),
+    Custom(String),
+}
+
+/// Max length of a custom event kind.
+pub const MAX_CUSTOM_KIND_LEN: usize = 128;
+
+/// Validate a custom event kind: 1..=128 chars of `[a-z0-9._-]`, starting
+/// with a letter or digit, containing at least one '.' (a namespace, e.g.
+/// "payment.failed"). The required dot also guarantees a custom kind can
+/// never collide with — or impersonate — a built-in PascalCase kind.
+pub fn validate_custom_kind(s: &str) -> Result<(), String> {
+    if s.is_empty() || s.len() > MAX_CUSTOM_KIND_LEN {
+        return Err(format!(
+            "custom kind must be 1..={MAX_CUSTOM_KIND_LEN} characters"
+        ));
+    }
+    if !s.starts_with(|c: char| c.is_ascii_lowercase() || c.is_ascii_digit()) {
+        return Err("custom kind must start with a lowercase letter or digit".into());
+    }
+    if !s
+        .chars()
+        .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || matches!(c, '.' | '_' | '-'))
+    {
+        return Err("custom kind may only contain a-z, 0-9, '.', '_' and '-'".into());
+    }
+    if !s.contains('.') {
+        return Err("custom kind needs a namespace, e.g. \"payment.failed\"".into());
+    }
+    Ok(())
+}
+
+impl EventType {
+    /// Parse a wire string: a built-in kind name, else a valid custom kind.
+    pub fn parse(s: &str) -> Result<Self, String> {
+        if let Ok(k) = serde_json::from_value::<EventKind>(serde_json::Value::String(s.into())) {
+            return Ok(EventType::Builtin(k));
+        }
+        validate_custom_kind(s).map_err(|e| format!("unknown event kind {s:?}: {e}"))?;
+        Ok(EventType::Custom(s.to_string()))
+    }
+
+    /// The built-in kind, if this is one.
+    pub fn builtin(&self) -> Option<EventKind> {
+        match self {
+            EventType::Builtin(k) => Some(*k),
+            EventType::Custom(_) => None,
+        }
+    }
+
+    pub fn is_custom(&self) -> bool {
+        matches!(self, EventType::Custom(_))
+    }
+}
+
+impl std::fmt::Display for EventType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            EventType::Builtin(k) => {
+                let v = serde_json::to_value(k).map_err(|_| std::fmt::Error)?;
+                f.write_str(v.as_str().unwrap_or_default())
+            }
+            EventType::Custom(s) => f.write_str(s),
+        }
+    }
+}
+
+impl From<EventKind> for EventType {
+    fn from(k: EventKind) -> Self {
+        EventType::Builtin(k)
+    }
+}
+
+impl PartialEq<EventKind> for EventType {
+    fn eq(&self, other: &EventKind) -> bool {
+        matches!(self, EventType::Builtin(k) if k == other)
+    }
+}
+
+impl Default for EventType {
+    fn default() -> Self {
+        EventType::Builtin(EventKind::ServiceFailed)
+    }
+}
+
+impl Serialize for EventType {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        s.serialize_str(&self.to_string())
+    }
+}
+
+impl<'de> Deserialize<'de> for EventType {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        let s = String::deserialize(d)?;
+        EventType::parse(&s).map_err(serde::de::Error::custom)
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Evidence {
     /// unix millis
@@ -99,7 +204,11 @@ pub struct Evidence {
     pub detail: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// One event. Host agents send built-in kinds; applications send custom
+/// kinds (POST /v1/events) with optional structured context. The context
+/// fields are omitted from the wire when empty, so host-agent payloads are
+/// unchanged.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct AgentEvent {
     pub id: String,
     /// unix millis
@@ -107,10 +216,25 @@ pub struct AgentEvent {
     pub host_id: String,
     /// Dedup key within a kind, e.g. "svc:nginx" or "mount:/".
     pub key: String,
-    pub kind: EventKind,
+    pub kind: EventType,
     pub severity: Severity,
     pub summary: String,
     pub evidence: Vec<Evidence>,
+    /// Producing application/service, e.g. "payment-api".
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub source: String,
+    /// Deployment environment, e.g. "production".
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub environment: String,
+    /// What the event is about, e.g. "merchant:mer_123".
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub subject: String,
+    /// Dimensions/context (merchant_id, endpoint, provider, ...).
+    #[serde(default, skip_serializing_if = "serde_json::Map::is_empty")]
+    pub attributes: serde_json::Map<String, serde_json::Value>,
+    /// Numeric values rules can evaluate (failure_rate, attempts, ...).
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub measurements: std::collections::BTreeMap<String, f64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -253,7 +377,7 @@ mod tests {
             ts: 1000,
             host_id: "h-1".into(),
             key: "svc:nginx".into(),
-            kind: EventKind::ServiceFailed,
+            kind: EventKind::ServiceFailed.into(),
             severity: Severity::Critical,
             summary: "nginx.service entered failed state".into(),
             evidence: vec![Evidence {
@@ -261,6 +385,7 @@ mod tests {
                 source: "systemd".into(),
                 detail: "ActiveState=failed".into(),
             }],
+            ..Default::default()
         };
         let v: serde_json::Value = serde_json::to_value(&ev).unwrap();
         assert_eq!(v["kind"], "ServiceFailed");

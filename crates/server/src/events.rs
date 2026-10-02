@@ -1,23 +1,156 @@
+use std::collections::HashMap;
+
 use axum::extract::{Query, State};
 use axum::http::StatusCode;
 use axum::Json;
-use serde::Deserialize;
 use serde_json::json;
+use wt_common::AgentEvent;
 
 use crate::app::AppState;
 
-#[derive(Deserialize, Default)]
-pub struct EventQuery {
-    host: Option<String>,
-    kind: Option<String>,
-    severity: Option<String>,
-    since: Option<i64>,
-    #[serde(default = "default_limit")]
-    limit: i64,
+/// Canonical event column list (table alias `e`) — every event SELECT uses
+/// it, and `EventRow` matches its order exactly.
+pub(crate) const EVENT_COLS: &str = "e.id, e.ts, e.host_id, e.key, e.kind, e.severity, e.summary, \
+     e.evidence_json, e.source, e.environment, e.subject, e.attributes_json, e.measurements_json";
+
+pub(crate) type EventRow = (
+    String,
+    i64,
+    String,
+    String,
+    String,
+    String,
+    String,
+    String,
+    String,
+    String,
+    String,
+    String,
+    String,
+);
+
+/// Row → event. None when the stored kind/severity no longer parses (never
+/// expected; such rows are skipped rather than failing the whole query).
+pub(crate) fn row_to_event(r: EventRow) -> Option<AgentEvent> {
+    let (
+        id,
+        ts,
+        host_id,
+        key,
+        kind,
+        severity,
+        summary,
+        evidence_json,
+        source,
+        environment,
+        subject,
+        attributes_json,
+        measurements_json,
+    ) = r;
+    Some(AgentEvent {
+        id,
+        ts,
+        host_id,
+        key,
+        kind: wt_common::EventType::parse(&kind).ok()?,
+        severity: serde_json::from_value(json!(severity)).ok()?,
+        summary,
+        evidence: serde_json::from_str(&evidence_json).unwrap_or_default(),
+        source,
+        environment,
+        subject,
+        attributes: serde_json::from_str(&attributes_json).unwrap_or_default(),
+        measurements: serde_json::from_str(&measurements_json).unwrap_or_default(),
+    })
 }
 
-fn default_limit() -> i64 {
-    100
+/// API shape of an event. Context fields appear only when set, so built-in
+/// host events keep their original shape.
+pub fn event_json(ev: &AgentEvent) -> serde_json::Value {
+    let mut v = json!({
+        "id": ev.id,
+        "ts": ev.ts,
+        "host_id": ev.host_id,
+        "key": ev.key,
+        "kind": ev.kind.to_string(),
+        "severity": crate::ingest::severity_wire(ev.severity),
+        "summary": ev.summary,
+        "evidence": ev.evidence,
+    });
+    for (k, val) in [
+        ("source", &ev.source),
+        ("environment", &ev.environment),
+        ("subject", &ev.subject),
+    ] {
+        if !val.is_empty() {
+            v[k] = json!(val);
+        }
+    }
+    if !ev.attributes.is_empty() {
+        v["attributes"] = json!(ev.attributes);
+    }
+    if !ev.measurements.is_empty() {
+        v["measurements"] = json!(ev.measurements);
+    }
+    v
+}
+
+/// Event query filters. `attrs` = `attr.<name>=<value>` query parameters
+/// (exact match on a top-level attribute, compared as text).
+#[derive(Default, Debug)]
+pub struct EventQuery {
+    pub host: Option<String>,
+    pub kind: Option<String>,
+    pub severity: Option<String>,
+    pub source: Option<String>,
+    pub environment: Option<String>,
+    pub subject: Option<String>,
+    pub incident_id: Option<String>,
+    pub since: Option<i64>,
+    pub until: Option<i64>,
+    pub attrs: Vec<(String, String)>,
+    pub limit: i64,
+}
+
+impl EventQuery {
+    /// Parse raw query parameters. Err = a malformed number or attribute name.
+    pub fn from_params(p: &HashMap<String, String>) -> Result<Self, String> {
+        let num = |k: &str| -> Result<Option<i64>, String> {
+            p.get(k)
+                .map(|v| {
+                    v.parse::<i64>()
+                        .map_err(|_| format!("{k} must be an integer"))
+                })
+                .transpose()
+        };
+        let mut attrs = Vec::new();
+        for (k, v) in p {
+            if let Some(name) = k.strip_prefix("attr.") {
+                if name.is_empty()
+                    || !name
+                        .chars()
+                        .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+                {
+                    return Err(format!("invalid attribute filter {k:?}"));
+                }
+                attrs.push((name.to_string(), v.clone()));
+            }
+        }
+        attrs.sort();
+        Ok(EventQuery {
+            host: p.get("host").cloned(),
+            kind: p.get("kind").cloned(),
+            severity: p.get("severity").cloned(),
+            source: p.get("source").cloned(),
+            environment: p.get("environment").cloned(),
+            subject: p.get("subject").cloned(),
+            incident_id: p.get("incident_id").cloned(),
+            since: num("since")?,
+            until: num("until")?,
+            attrs,
+            limit: num("limit")?.unwrap_or(100),
+        })
+    }
 }
 
 /// GET /v1/events — timeline. Order is (ts DESC, id) — NEVER arrival order:
@@ -25,11 +158,16 @@ fn default_limit() -> i64 {
 /// constraint); created_at must never be used for ordering.
 pub async fn list_events(
     State(state): State<AppState>,
-    Query(q): Query<EventQuery>,
-) -> Result<Json<serde_json::Value>, StatusCode> {
+    Query(params): Query<HashMap<String, String>>,
+) -> Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)> {
+    let q = EventQuery::from_params(&params)
+        .map_err(|e| (StatusCode::BAD_REQUEST, Json(json!({ "error": e }))))?;
     let events = fetch_events(&state.pool, &q).await.map_err(|e| {
         eprintln!("events list failed: {e}");
-        StatusCode::INTERNAL_SERVER_ERROR
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({ "error": "query failed" })),
+        )
     })?;
     Ok(Json(json!({ "events": events })))
 }
@@ -38,41 +176,66 @@ pub async fn fetch_events(
     pool: &sqlx::AnyPool,
     q: &EventQuery,
 ) -> Result<Vec<serde_json::Value>, sqlx::Error> {
-    let limit = q.limit.clamp(1, 1000);
-    let rows = sqlx::query_as::<_, (String, i64, String, String, String, String, String)>(
-        "SELECT id, ts, host_id, kind, severity, summary, evidence_json
-         FROM events
-         WHERE ($1 IS NULL OR host_id = $1)
-           AND ($2 IS NULL OR kind = $2)
-           AND ($3 IS NULL OR severity = $3)
-           AND ($4 IS NULL OR ts >= $4)
-         ORDER BY ts DESC, id
-         LIMIT $5",
-    )
-    .bind(q.host.as_deref())
-    .bind(q.kind.as_deref())
-    .bind(q.severity.as_deref())
-    .bind(q.since)
-    .bind(limit)
-    .fetch_all(pool)
-    .await?;
+    // dynamic WHERE: one numbered placeholder per present filter
+    let mut sql = format!("SELECT {EVENT_COLS} FROM events e WHERE 1 = 1");
+    let mut binds: Vec<String> = Vec::new();
+    let mut ints: Vec<(usize, i64)> = Vec::new();
+    let mut n = 0usize;
+    let mut text = |sql: &mut String, cond: &str, v: &str| {
+        n += 1;
+        sql.push_str(&format!(" AND {}", cond.replace("{}", &format!("${n}"))));
+        binds.push(v.to_string());
+    };
+    for (col, val) in [
+        ("e.host_id = {}", &q.host),
+        ("e.kind = {}", &q.kind),
+        ("e.severity = {}", &q.severity),
+        ("e.source = {}", &q.source),
+        ("e.environment = {}", &q.environment),
+        ("e.subject = {}", &q.subject),
+        (
+            "e.id IN (SELECT event_id FROM incident_events WHERE incident_id = {})",
+            &q.incident_id,
+        ),
+    ] {
+        if let Some(v) = val {
+            text(&mut sql, col, v);
+        }
+    }
+    let postgres = crate::db::is_postgres(pool);
+    for (name, value) in &q.attrs {
+        // name is restricted to [A-Za-z0-9_-] by from_params
+        let expr = if postgres {
+            format!("(e.attributes_json::jsonb ->> '{name}') = {{}}")
+        } else {
+            format!("CAST(json_extract(e.attributes_json, '$.\"{name}\"') AS TEXT) = {{}}")
+        };
+        text(&mut sql, &expr, value);
+    }
+    drop(text);
+    for (cond, val) in [("e.ts >= ", q.since), ("e.ts <= ", q.until)] {
+        if let Some(v) = val {
+            n += 1;
+            sql.push_str(&format!(" AND {cond}${n}"));
+            ints.push((n, v));
+        }
+    }
+    n += 1;
+    sql.push_str(&format!(" ORDER BY e.ts DESC, e.id LIMIT ${n}"));
+    let mut query = sqlx::query_as::<_, EventRow>(&sql);
+    // placeholders were numbered text-first, then ints, then the limit
+    for b in &binds {
+        query = query.bind(b.clone());
+    }
+    for (_, v) in &ints {
+        query = query.bind(*v);
+    }
+    query = query.bind(q.limit.clamp(1, 1000));
+    let rows = query.fetch_all(pool).await?;
     Ok(rows
         .into_iter()
-        .map(
-            |(id, ts, host_id, kind, severity, summary, evidence_json)| {
-                let evidence = serde_json::from_str::<serde_json::Value>(&evidence_json)
-                    .unwrap_or_else(|_| json!([]));
-                json!({
-                    "id": id,
-                    "ts": ts,
-                    "host_id": host_id,
-                    "kind": kind,
-                    "severity": severity,
-                    "summary": summary,
-                    "evidence": evidence,
-                })
-            },
-        )
+        .filter_map(row_to_event)
+        .map(|e| event_json(&e))
         .collect())
 }
 
@@ -80,33 +243,14 @@ pub async fn fetch_events(
 pub async fn fetch_events_simple(
     pool: &sqlx::AnyPool,
     since_ms: i64,
-) -> Result<Vec<wt_common::AgentEvent>, sqlx::Error> {
-    let rows = sqlx::query_as::<_, (String, i64, String, String, String, String, String, String)>(
-        "SELECT id, ts, host_id, key, kind, severity, summary, evidence_json
-         FROM events WHERE ts >= $1 ORDER BY ts ASC, id",
-    )
+) -> Result<Vec<AgentEvent>, sqlx::Error> {
+    let rows = sqlx::query_as::<_, EventRow>(&format!(
+        "SELECT {EVENT_COLS} FROM events e WHERE e.ts >= $1 ORDER BY e.ts ASC, e.id"
+    ))
     .bind(since_ms)
     .fetch_all(pool)
     .await?;
-    Ok(rows
-        .into_iter()
-        .filter_map(
-            |(id, ts, host_id, key, kind, severity, summary, evidence_json)| {
-                let kind = serde_json::from_str(&format!("\"{}\"", kind)).ok()?;
-                let severity = serde_json::from_str(&format!("\"{}\"", severity)).ok()?;
-                Some(wt_common::AgentEvent {
-                    id,
-                    ts,
-                    host_id,
-                    key,
-                    kind,
-                    severity,
-                    summary,
-                    evidence: serde_json::from_str(&evidence_json).unwrap_or_default(),
-                })
-            },
-        )
-        .collect())
+    Ok(rows.into_iter().filter_map(row_to_event).collect())
 }
 
 #[cfg(test)]
@@ -124,7 +268,7 @@ mod tests {
             ts,
             host_id: "h-1".into(),
             key: format!("k:{}", id),
-            kind,
+            kind: kind.into(),
             severity: sev,
             summary: format!("event {}", id),
             evidence: vec![wt_common::Evidence {
@@ -132,6 +276,7 @@ mod tests {
                 source: "test".into(),
                 detail: "d".into(),
             }],
+            ..Default::default()
         };
         crate::ingest::store_events(&state.pool, &[ev])
             .await

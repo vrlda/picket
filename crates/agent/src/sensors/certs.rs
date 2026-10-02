@@ -77,7 +77,7 @@ pub fn scan_certs(
             ts,
             host_id: host_id.into(),
             key: format!("cert:{}", path),
-            kind: EventKind::CertExpiring,
+            kind: EventKind::CertExpiring.into(),
             severity: sev,
             summary: format!("certificate {} expires in {} days", path, days_left),
             evidence: vec![Evidence {
@@ -88,6 +88,7 @@ pub fn scan_certs(
                     path, not_after, days_left
                 ),
             }],
+            ..Default::default()
         });
     }
     evs

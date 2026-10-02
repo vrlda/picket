@@ -11,10 +11,11 @@ fn ev(id: &str, ts: i64, kind: EventKind, sev: Severity, key: &str) -> AgentEven
         ts,
         host_id: "demo-host".into(),
         key: key.into(),
-        kind,
+        kind: kind.into(),
         severity: sev,
         summary: format!("{} {:?}", id, kind),
         evidence: vec![],
+        ..Default::default()
     }
 }
 

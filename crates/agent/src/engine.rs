@@ -62,7 +62,7 @@ impl SpikeDetector {
 /// Suppress re-emission of the same (kind, key) within `window_secs`.
 pub struct Deduper {
     window_secs: i64,
-    last_emitted: HashMap<(EventKind, String), i64>,
+    last_emitted: HashMap<(wt_common::EventType, String), i64>,
 }
 
 impl Deduper {
@@ -73,10 +73,10 @@ impl Deduper {
         }
     }
 
-    pub fn should_emit(&mut self, kind: EventKind, key: &str, ts: i64) -> bool {
+    pub fn should_emit(&mut self, kind: &wt_common::EventType, key: &str, ts: i64) -> bool {
         let entry = self
             .last_emitted
-            .entry((kind, key.to_string()))
+            .entry((kind.clone(), key.to_string()))
             .or_insert(i64::MIN);
         if ts.saturating_sub(*entry) >= self.window_secs {
             *entry = ts;
@@ -156,7 +156,7 @@ impl CpuState {
                 ts,
                 host_id: self.host.clone(),
                 key: "cpu:usage".into(),
-                kind: EventKind::CpuSpike,
+                kind: EventKind::CpuSpike.into(),
                 severity: Severity::Warning,
                 summary: format!("CPU usage spiked to {:.0}%", pct),
                 evidence: vec![Evidence {
@@ -164,6 +164,7 @@ impl CpuState {
                     source: "engine".into(),
                     detail: format!("CpuUsagePct={:.1}", pct),
                 }],
+                ..Default::default()
             });
         }
         evs
@@ -369,7 +370,7 @@ pub fn run_once(
                     ts,
                     host_id: host_id.into(),
                     key: "system:reboot".into(),
-                    kind: EventKind::Reboot,
+                    kind: EventKind::Reboot.into(),
                     severity: Severity::Warning,
                     summary: "system rebooted (uptime and boot id reset)".into(),
                     evidence: vec![Evidence {
@@ -377,6 +378,7 @@ pub fn run_once(
                         source: "procfs".into(),
                         detail: format!("BootEpoch={}", boot),
                     }],
+                    ..Default::default()
                 });
             }
         }
@@ -417,7 +419,7 @@ pub fn run_once(
                                 ts: line.ts_ms,
                                 host_id: host_id.into(),
                                 key: format!("ssh:brute:{}:{}", auth.user, auth.ip),
-                                kind: EventKind::SshBruteForce,
+                                kind: EventKind::SshBruteForce.into(),
                                 severity: Severity::Warning,
                                 summary: format!(
                                     "{} failed SSH logins for {} from {} in {}s",
@@ -428,6 +430,7 @@ pub fn run_once(
                                     source: "journald".into(),
                                     detail: auth.detail.clone(),
                                 }],
+                                ..Default::default()
                             });
                         } else {
                             evs.push(AgentEvent {
@@ -435,7 +438,7 @@ pub fn run_once(
                                 ts: line.ts_ms,
                                 host_id: host_id.into(),
                                 key: format!("ssh:failed:{}:{}", auth.user, auth.ip),
-                                kind: EventKind::SshFailed,
+                                kind: EventKind::SshFailed.into(),
                                 severity: Severity::Warning,
                                 summary: format!(
                                     "failed SSH login for {} from {}",
@@ -446,6 +449,7 @@ pub fn run_once(
                                     source: "journald".into(),
                                     detail: auth.detail.clone(),
                                 }],
+                                ..Default::default()
                             });
                         }
                     }
@@ -481,7 +485,7 @@ pub fn run_once(
                                 AuthKind::SudoUsed => format!("sudo:{}", auth.user),
                                 _ => format!("ssh:login:{}", auth.user),
                             },
-                            kind,
+                            kind: kind.into(),
                             severity: sev,
                             summary,
                             evidence: vec![Evidence {
@@ -489,6 +493,7 @@ pub fn run_once(
                                 source: "journald".into(),
                                 detail: auth.detail.clone(),
                             }],
+                            ..Default::default()
                         });
                     }
                 }
@@ -499,7 +504,7 @@ pub fn run_once(
                     ts: line.ts_ms,
                     host_id: host_id.into(),
                     key: format!("svc:{}", unit),
-                    kind: EventKind::ServiceRestarted,
+                    kind: EventKind::ServiceRestarted.into(),
                     severity: Severity::Info,
                     summary: format!("{} restarted", unit),
                     evidence: vec![Evidence {
@@ -507,6 +512,7 @@ pub fn run_once(
                         source: "journald".into(),
                         detail: line.message.clone(),
                     }],
+                    ..Default::default()
                 });
             }
             if let Some(sig) = crate::sensors::health::classify(line) {
@@ -526,7 +532,7 @@ pub fn run_once(
                     ts: line.ts_ms,
                     host_id: host_id.into(),
                     key: key.into(),
-                    kind,
+                    kind: kind.into(),
                     severity: sev,
                     summary: line.message.clone(),
                     evidence: vec![Evidence {
@@ -534,6 +540,7 @@ pub fn run_once(
                         source: "journald".into(),
                         detail: line.message.clone(),
                     }],
+                    ..Default::default()
                 });
             }
             if let Some(sig) = crate::sensors::security::classify(line) {
@@ -550,7 +557,7 @@ pub fn run_once(
                     ts: line.ts_ms,
                     host_id: host_id.into(),
                     key: key.into(),
-                    kind,
+                    kind: kind.into(),
                     severity: sev,
                     summary: line.message.clone(),
                     evidence: vec![Evidence {
@@ -558,6 +565,7 @@ pub fn run_once(
                         source: "journald".into(),
                         detail: line.message.clone(),
                     }],
+                    ..Default::default()
                 });
             }
             if !state.error_regexes.is_empty() {
@@ -610,7 +618,7 @@ pub fn run_once(
                 ts,
                 host_id: host_id.into(),
                 key: format!("http5xx:{}", path),
-                kind: EventKind::ErrorRateSpike,
+                kind: EventKind::ErrorRateSpike.into(),
                 severity: Severity::Warning,
                 summary: format!("{} 5xx responses from {}", errors_5xx, path),
                 evidence: vec![Evidence {
@@ -618,6 +626,7 @@ pub fn run_once(
                     source: "accesslog".into(),
                     detail: format!("Path={} FiveXx={}", path, errors_5xx),
                 }],
+                ..Default::default()
             });
         }
         state.request_counts.push_back((ts, lines.len() as u32));
@@ -633,7 +642,7 @@ pub fn run_once(
             ts,
             host_id: host_id.into(),
             key: "http:reqrate".into(),
-            kind: EventKind::RequestRateSpike,
+            kind: EventKind::RequestRateSpike.into(),
             severity: Severity::Warning,
             summary: format!(
                 "request rate exceeded {} in {}s",
@@ -647,6 +656,7 @@ pub fn run_once(
                     total, cfg.request_rate_window_secs
                 ),
             }],
+            ..Default::default()
         });
     }
 
@@ -696,7 +706,7 @@ pub fn run_once(
                 ts,
                 host_id: host_id.into(),
                 key: format!("persist:{}", path),
-                kind: EventKind::PersistenceChanged,
+                kind: EventKind::PersistenceChanged.into(),
                 severity: Severity::Warning,
                 summary: format!("persistence change: {}", path),
                 evidence: vec![Evidence {
@@ -704,6 +714,7 @@ pub fn run_once(
                     source: "security".into(),
                     detail: format!("Path={}", path),
                 }],
+                ..Default::default()
             });
         }
     }
@@ -719,7 +730,7 @@ pub fn run_once(
                     ts,
                     host_id: host_id.into(),
                     key: format!("suspicious:{}", p.pid),
-                    kind: EventKind::SuspiciousExec,
+                    kind: EventKind::SuspiciousExec.into(),
                     severity: Severity::Critical,
                     summary: format!("suspicious process {} ({}): {}", p.pid, p.exe, reason),
                     evidence: vec![Evidence {
@@ -730,6 +741,7 @@ pub fn run_once(
                             p.pid, p.exe, p.cmdline, reason
                         ),
                     }],
+                    ..Default::default()
                 });
             }
         }
@@ -750,7 +762,7 @@ pub fn run_once(
                         ts,
                         host_id: host_id.into(),
                         key: format!("unexpected:{}", exe),
-                        kind: EventKind::UnexpectedExec,
+                        kind: EventKind::UnexpectedExec.into(),
                         severity: Severity::Warning,
                         summary: format!("unexpected executable running: {}", exe),
                         evidence: vec![Evidence {
@@ -758,6 +770,7 @@ pub fn run_once(
                             source: "process".into(),
                             detail: format!("Exe={}", exe),
                         }],
+                        ..Default::default()
                     });
                 }
                 state.known_exes.as_mut().unwrap().extend(current);
@@ -783,7 +796,7 @@ pub fn run_once(
                 ts,
                 host_id: host_id.into(),
                 key: format!("errrate:{}:{}", ident, pat),
-                kind: EventKind::ErrorRateSpike,
+                kind: EventKind::ErrorRateSpike.into(),
                 severity: Severity::Warning,
                 summary: format!(
                     "{} error pattern \"{}\" hit {} times in {}s",
@@ -797,6 +810,7 @@ pub fn run_once(
                         ident, pat, count, cfg.error_window_secs
                     ),
                 }],
+                ..Default::default()
             });
         }
     }
@@ -808,7 +822,7 @@ pub fn run_once(
         }
     }
 
-    evs.retain(|e| deduper.should_emit(e.kind, &e.key, e.ts));
+    evs.retain(|e| deduper.should_emit(&e.kind, &e.key, e.ts));
     evs
 }
 
@@ -856,16 +870,16 @@ mod tests {
     #[test]
     fn deduper_suppresses_within_window() {
         let mut d = Deduper::new(300);
-        assert!(d.should_emit(EventKind::LoadHigh, "load:1m", 1000));
-        assert!(!d.should_emit(EventKind::LoadHigh, "load:1m", 1100));
-        assert!(d.should_emit(EventKind::LoadHigh, "load:5m", 1100));
+        assert!(d.should_emit(&EventKind::LoadHigh.into(), "load:1m", 1000));
+        assert!(!d.should_emit(&EventKind::LoadHigh.into(), "load:1m", 1100));
+        assert!(d.should_emit(&EventKind::LoadHigh.into(), "load:5m", 1100));
     }
 
     #[test]
     fn deduper_allows_after_window_expires() {
         let mut d = Deduper::new(300);
-        assert!(d.should_emit(EventKind::DiskHigh, "mount:/", 1000));
-        assert!(d.should_emit(EventKind::DiskHigh, "mount:/", 1301));
+        assert!(d.should_emit(&EventKind::DiskHigh.into(), "mount:/", 1000));
+        assert!(d.should_emit(&EventKind::DiskHigh.into(), "mount:/", 1301));
     }
 
     #[test]
@@ -1250,7 +1264,7 @@ mod tests {
         assert!(
             spike.is_some(),
             "threshold crossed must emit, got {:?}",
-            evs.iter().map(|e| e.kind).collect::<Vec<_>>()
+            evs.iter().map(|e| e.kind.clone()).collect::<Vec<_>>()
         );
         assert_eq!(spike.unwrap().severity, wt_common::Severity::Warning);
         assert!(spike.unwrap().summary.contains("ERROR"));
