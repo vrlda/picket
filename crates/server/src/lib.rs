@@ -21,3 +21,6 @@ pub mod redact;
 pub mod rules;
 pub mod supervise;
 pub mod watchdog;
+
+#[cfg(test)]
+mod autonomy_tests;

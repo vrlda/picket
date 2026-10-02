@@ -181,11 +181,12 @@ pub async fn fetch_events(
     let mut binds: Vec<String> = Vec::new();
     let mut ints: Vec<(usize, i64)> = Vec::new();
     let mut n = 0usize;
-    let mut text = |sql: &mut String, cond: &str, v: &str| {
-        n += 1;
+    // text filter: `{}` in `cond` becomes the next placeholder
+    fn text(sql: &mut String, binds: &mut Vec<String>, n: &mut usize, cond: &str, v: &str) {
+        *n += 1;
         sql.push_str(&format!(" AND {}", cond.replace("{}", &format!("${n}"))));
         binds.push(v.to_string());
-    };
+    }
     for (col, val) in [
         ("e.host_id = {}", &q.host),
         ("e.kind = {}", &q.kind),
@@ -199,7 +200,7 @@ pub async fn fetch_events(
         ),
     ] {
         if let Some(v) = val {
-            text(&mut sql, col, v);
+            text(&mut sql, &mut binds, &mut n, col, v);
         }
     }
     let postgres = crate::db::is_postgres(pool);
@@ -210,9 +211,8 @@ pub async fn fetch_events(
         } else {
             format!("CAST(json_extract(e.attributes_json, '$.\"{name}\"') AS TEXT) = {{}}")
         };
-        text(&mut sql, &expr, value);
+        text(&mut sql, &mut binds, &mut n, &expr, value);
     }
-    drop(text);
     for (cond, val) in [("e.ts >= ", q.since), ("e.ts <= ", q.until)] {
         if let Some(v) = val {
             n += 1;
