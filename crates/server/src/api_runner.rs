@@ -179,7 +179,7 @@ async fn context_task(
     state: &AppState,
     headers: &HeaderMap,
     id: &str,
-) -> Result<agent_tasks::TaskRow, Response> {
+) -> Result<agent_tasks::TaskRow, Box<Response>> {
     let token = headers
         .get("authorization")
         .and_then(|v| v.to_str().ok())
@@ -187,13 +187,16 @@ async fn context_task(
         .unwrap_or_default();
     match agent_tasks::task_for_context_token(&state.pool, id, token).await {
         Ok(Some(t)) => Ok(t),
-        Ok(None) => Err(err(
+        Ok(None) => Err(Box::new(err(
             StatusCode::UNAUTHORIZED,
             "invalid or expired task token",
-        )),
+        ))),
         Err(e) => {
             eprintln!("task context auth failed: {e}");
-            Err(err(StatusCode::INTERNAL_SERVER_ERROR, "store failed"))
+            Err(Box::new(err(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "store failed",
+            )))
         }
     }
 }
@@ -221,7 +224,7 @@ pub async fn context(
 ) -> Response {
     let task = match context_task(&state, &headers, &id).await {
         Ok(t) => t,
-        Err(r) => return r,
+        Err(r) => return *r,
     };
     let inc = match crate::incidents::fetch_incident(&state.pool, &task.incident_id).await {
         Ok(Some(i)) => i,
@@ -255,7 +258,7 @@ pub async fn context_events(
 ) -> Response {
     let task = match context_task(&state, &headers, &id).await {
         Ok(t) => t,
-        Err(r) => return r,
+        Err(r) => return *r,
     };
     if params.remove("scope").as_deref() != Some("all") {
         params.insert("incident_id".into(), task.incident_id.clone());
