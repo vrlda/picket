@@ -299,15 +299,7 @@ pub async fn dispatch_agent(
     } else {
         format!("Agent task queued (profile {profile_name}) — but no configured runner matches this profile")
     };
-    crate::dispatch::record_activity(
-        pool,
-        &inc.id,
-        "agent",
-        "watchtower",
-        &note,
-        json!({ "task_id": id }),
-    )
-    .await?;
+    log_task(pool, &inc.id, &id, "watchtower", &note).await;
     state.task_notify.notify_waiters();
     Ok(DispatchOutcome::Created(id))
 }
@@ -359,6 +351,20 @@ pub async fn dispatch_for_incident(state: &AppState, inc: &Incident) -> Option<(
     (!notes.is_empty()).then(|| (notes.join("\n"), news))
 }
 
+/// Agent-lifecycle entry in the incident's activity log (best effort: a
+/// failed log write never fails the task operation).
+async fn log_task(
+    pool: &sqlx::AnyPool,
+    incident_id: &str,
+    task_id: &str,
+    actor: &str,
+    summary: &str,
+) {
+    let data = json!({ "task_id": task_id });
+    let _ =
+        crate::dispatch::record_activity(pool, incident_id, "agent", actor, summary, data).await;
+}
+
 // ---------- notifications ----------
 
 /// Notify the channels the incident's rule routes for this moment, with a
@@ -374,7 +380,7 @@ pub async fn notify_moment(state: &AppState, incident_id: &str, moment: Moment, 
         .find(|r| r.id == inc.rule_id)
         .map(|r| r.dispatch.clone())
         .unwrap_or_default();
-    let severity_channels = crate::notify::channels_for(&state.notify, &inc.severity);
+    let severity_channels = crate::notify::channels_for(&state.cfg.notify, &inc.severity);
     let channels = crate::dispatch::channels_for_moment(&actions, &severity_channels, moment);
     if channels.is_empty() {
         return;
@@ -486,13 +492,12 @@ pub async fn claim_next(state: &AppState, runner_id: &str) -> Result<Option<Clai
         if res.rows_affected() != 1 {
             continue; // another runner won it
         }
-        let _ = crate::dispatch::record_activity(
+        log_task(
             &state.pool,
             &incident_id,
-            "agent",
+            &id,
             runner_id,
             &format!("{runner_id} claimed agent task (attempt {})", attempt + 1),
-            json!({ "task_id": id }),
         )
         .await;
         return Ok(Some(Claimed {
@@ -606,15 +611,7 @@ pub async fn mark_started(
     .await?;
     let agent = if agent.is_empty() { "agent" } else { agent };
     let note = format!("{agent} investigation started on {runner_id}");
-    crate::dispatch::record_activity(
-        &state.pool,
-        &t.incident_id,
-        "agent",
-        runner_id,
-        &note,
-        json!({ "task_id": id }),
-    )
-    .await?;
+    log_task(&state.pool, &t.incident_id, id, runner_id, &note).await;
     notify_moment(
         state,
         &t.incident_id,
@@ -774,15 +771,14 @@ async fn finish_failed(
         .bind(now)
         .execute(&state.pool)
         .await?;
-        crate::dispatch::record_activity(
+        log_task(
             &state.pool,
             &t.incident_id,
-            "agent",
+            &t.id,
             actor,
             &format!("Agent attempt {} failed ({error}); retrying", t.attempt),
-            json!({ "task_id": t.id }),
         )
-        .await?;
+        .await;
         state.task_notify.notify_waiters();
         return Ok(status::QUEUED.into());
     }
@@ -800,15 +796,7 @@ async fn finish_failed(
         "❌ Autonomous response failed after {} attempt(s): {error}",
         t.attempt.max(1)
     );
-    crate::dispatch::record_activity(
-        &state.pool,
-        &t.incident_id,
-        "agent",
-        actor,
-        &notice,
-        json!({ "task_id": t.id }),
-    )
-    .await?;
+    log_task(&state.pool, &t.incident_id, &t.id, actor, &notice).await;
     notify_moment(state, &t.incident_id, Moment::AgentFailed, &notice).await;
     Ok(status::FAILED.into())
 }
@@ -889,13 +877,12 @@ pub async fn sweep(state: &AppState, now: i64) -> Result<(), sqlx::Error> {
                 .bind(now)
                 .execute(pool)
                 .await?;
-                let _ = crate::dispatch::record_activity(
+                log_task(
                     pool,
                     &t.incident_id,
-                    "agent",
+                    &t.id,
                     "watchtower",
                     "Agent task cancelled: incident resolved",
-                    json!({ "task_id": t.id }),
                 )
                 .await;
             }
@@ -926,15 +913,7 @@ pub async fn sweep(state: &AppState, now: i64) -> Result<(), sqlx::Error> {
                     "⚠️ Agent task waiting {} min: {why}",
                     (now - t.created_at) / 60_000
                 );
-                let _ = crate::dispatch::record_activity(
-                    pool,
-                    &t.incident_id,
-                    "agent",
-                    "watchtower",
-                    &notice,
-                    json!({ "task_id": t.id }),
-                )
-                .await;
+                log_task(pool, &t.incident_id, &t.id, "watchtower", &notice).await;
                 notify_moment(state, &t.incident_id, Moment::AgentFailed, &notice).await;
             }
             status::AWAITING_VERIFICATION => {
@@ -955,15 +934,7 @@ pub async fn sweep(state: &AppState, now: i64) -> Result<(), sqlx::Error> {
                         "❌ Agent's fix not verified: the problem was still observed {} min after it reported success",
                         (now - finished) / 60_000
                     );
-                    let _ = crate::dispatch::record_activity(
-                        pool,
-                        &t.incident_id,
-                        "agent",
-                        "watchtower",
-                        &notice,
-                        json!({ "task_id": t.id }),
-                    )
-                    .await;
+                    log_task(pool, &t.incident_id, &t.id, "watchtower", &notice).await;
                     notify_moment(state, &t.incident_id, Moment::AgentFailed, &notice).await;
                 }
             }
@@ -979,13 +950,12 @@ async fn mark_verified(state: &AppState, t: &TaskRow, why: &str) -> Result<(), s
         .bind(now_ms())
         .execute(&state.pool)
         .await?;
-    let _ = crate::dispatch::record_activity(
+    log_task(
         &state.pool,
         &t.incident_id,
-        "agent",
+        &t.id,
         "watchtower",
         &format!("Agent fix verified ({why})"),
-        json!({ "task_id": t.id }),
     )
     .await;
     Ok(())

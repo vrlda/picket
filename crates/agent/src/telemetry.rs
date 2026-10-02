@@ -207,33 +207,30 @@ impl std::fmt::Display for PostError {
 }
 
 pub fn post_batch(url: &str, token: &str, events: &[AgentEvent]) -> Result<(), PostError> {
-    let body = serde_json::to_string(&serde_json::json!({ "batch": events }))
-        .map_err(|e| PostError::Transport(e.to_string()))?;
-    let agent = ureq::AgentBuilder::new()
-        .timeout(std::time::Duration::from_secs(10))
-        .build();
-    let resp = agent
-        .post(&format!("{}/v1/telemetry", url.trim_end_matches('/')))
-        .set("Authorization", &format!("Bearer {}", token))
-        .set("Content-Type", "application/json")
-        .send_string(&body)
-        .map_err(|e| match e {
-            ureq::Error::Status(code, _) => PostError::HttpStatus(code),
-            ureq::Error::Transport(t) => PostError::Transport(t.to_string()),
-        })?;
-    if !(200..300).contains(&resp.status()) {
-        return Err(PostError::HttpStatus(resp.status()));
-    }
-    Ok(())
+    post_json(
+        url,
+        "/v1/telemetry",
+        token,
+        &serde_json::json!({ "batch": events }),
+    )
 }
 
 pub fn post_heartbeat(url: &str, token: &str, hb: &Heartbeat) -> Result<(), PostError> {
-    let body = serde_json::to_string(hb).map_err(|e| PostError::Transport(e.to_string()))?;
+    post_json(url, "/v1/heartbeat", token, hb)
+}
+
+fn post_json(
+    url: &str,
+    path: &str,
+    token: &str,
+    body: &impl serde::Serialize,
+) -> Result<(), PostError> {
+    let body = serde_json::to_string(body).map_err(|e| PostError::Transport(e.to_string()))?;
     let agent = ureq::AgentBuilder::new()
         .timeout(std::time::Duration::from_secs(10))
         .build();
     let resp = agent
-        .post(&format!("{}/v1/heartbeat", url.trim_end_matches('/')))
+        .post(&format!("{}{path}", url.trim_end_matches('/')))
         .set("Authorization", &format!("Bearer {}", token))
         .set("Content-Type", "application/json")
         .send_string(&body)
@@ -286,64 +283,16 @@ mod tests {
 
     #[test]
     fn post_batch_sends_json_with_auth_header() {
-        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-        let addr = listener.local_addr().unwrap();
-        let handle = std::thread::spawn(move || {
-            let (mut stream, _) = listener.accept().unwrap();
-            stream
-                .set_read_timeout(Some(std::time::Duration::from_millis(200)))
-                .unwrap();
-            let mut req = Vec::new();
-            loop {
-                let mut chunk = [0u8; 4096];
-                match stream.read(&mut chunk) {
-                    Ok(0) => break,
-                    Ok(n) => req.extend_from_slice(&chunk[..n]),
-                    Err(_) => break, // read timeout: client finished sending
-                }
-            }
-            let req = String::from_utf8_lossy(&req).into_owned();
-            stream
-                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok")
-                .unwrap();
-            stream.shutdown(std::net::Shutdown::Write).unwrap();
-            std::thread::sleep(std::time::Duration::from_millis(50));
-            req
-        });
-        let url = format!("http://{}", addr);
+        let (url, handle) = mock(&[200]);
         post_batch(&url, "secret-token", &[sample_event(1)]).unwrap();
-        let req = handle.join().unwrap();
+        let req = &handle.join().unwrap()[0];
         assert!(req.contains("Authorization: Bearer secret-token"));
         assert!(req.contains("\"kind\":\"ServiceFailed\""));
     }
 
     #[test]
     fn heartbeat_ships_minimal_payload() {
-        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-        let addr = listener.local_addr().unwrap();
-        let handle = std::thread::spawn(move || {
-            let (mut stream, _) = listener.accept().unwrap();
-            stream
-                .set_read_timeout(Some(std::time::Duration::from_millis(200)))
-                .unwrap();
-            let mut req = Vec::new();
-            loop {
-                let mut chunk = [0u8; 4096];
-                match stream.read(&mut chunk) {
-                    Ok(0) => break,
-                    Ok(n) => req.extend_from_slice(&chunk[..n]),
-                    Err(_) => break, // read timeout: client finished sending
-                }
-            }
-            let req = String::from_utf8_lossy(&req).into_owned();
-            stream
-                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok")
-                .unwrap();
-            stream.shutdown(std::net::Shutdown::Write).unwrap();
-            std::thread::sleep(std::time::Duration::from_millis(50));
-            req
-        });
-        let url = format!("http://{}", addr);
+        let (url, handle) = mock(&[200]);
         let hb = Heartbeat {
             host_id: "h-1".into(),
             ts: 9,
@@ -351,35 +300,12 @@ mod tests {
             queue_len: 3,
         };
         post_heartbeat(&url, "secret-token", &hb).unwrap();
-        let req = handle.join().unwrap();
-        assert!(req.contains("\"queue_len\":3"));
+        assert!(handle.join().unwrap()[0].contains("\"queue_len\":3"));
     }
 
     #[test]
     fn post_batch_reports_http_status_error() {
-        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-        let addr = listener.local_addr().unwrap();
-        let handle = std::thread::spawn(move || {
-            let (mut stream, _) = listener.accept().unwrap();
-            stream
-                .set_read_timeout(Some(std::time::Duration::from_millis(200)))
-                .unwrap();
-            let mut req = Vec::new();
-            loop {
-                let mut chunk = [0u8; 4096];
-                match stream.read(&mut chunk) {
-                    Ok(0) => break,
-                    Ok(n) => req.extend_from_slice(&chunk[..n]),
-                    Err(_) => break, // read timeout: client finished sending
-                }
-            }
-            stream
-                .write_all(b"HTTP/1.1 500 Internal Server Error\r\nContent-Length: 0\r\n\r\n")
-                .unwrap();
-            stream.shutdown(std::net::Shutdown::Write).unwrap();
-            std::thread::sleep(std::time::Duration::from_millis(50));
-        });
-        let url = format!("http://{}", addr);
+        let (url, handle) = mock(&[500]);
         let err = post_batch(&url, "secret-token", &[sample_event(1)]).unwrap_err();
         assert!(matches!(err, PostError::HttpStatus(500)));
         handle.join().unwrap();
@@ -469,30 +395,41 @@ mod tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 
-    /// Spawn a mock server answering every request with the given status line.
-    fn mock_server(status: &'static str) -> (String, std::thread::JoinHandle<()>) {
+    /// Mock server answering one request per status, in order; the handle
+    /// yields the raw requests.
+    fn mock(statuses: &[u16]) -> (String, std::thread::JoinHandle<Vec<String>>) {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let addr = listener.local_addr().unwrap();
+        let statuses = statuses.to_vec();
         let handle = std::thread::spawn(move || {
-            let (mut stream, _) = listener.accept().unwrap();
-            stream
-                .set_read_timeout(Some(std::time::Duration::from_millis(200)))
-                .unwrap();
-            let mut req = Vec::new();
-            loop {
-                let mut chunk = [0u8; 4096];
-                match stream.read(&mut chunk) {
-                    Ok(0) => break,
-                    Ok(n) => req.extend_from_slice(&chunk[..n]),
-                    Err(_) => break, // read timeout: client finished sending
+            let mut requests = Vec::new();
+            for status in statuses {
+                let (mut stream, _) = listener.accept().unwrap();
+                stream
+                    .set_read_timeout(Some(std::time::Duration::from_secs(2)))
+                    .unwrap();
+                let (mut buf, mut chunk) = (Vec::new(), [0u8; 8192]);
+                let mut total = usize::MAX;
+                while buf.len() < total {
+                    match stream.read(&mut chunk) {
+                        Ok(0) | Err(_) => break,
+                        Ok(n) => buf.extend_from_slice(&chunk[..n]),
+                    }
+                    if let Some(end) = buf.windows(4).position(|w| w == b"\r\n\r\n") {
+                        let head = String::from_utf8_lossy(&buf[..end]).to_lowercase();
+                        let len = head
+                            .lines()
+                            .find_map(|l| l.strip_prefix("content-length:"))
+                            .and_then(|v| v.trim().parse::<usize>().ok())
+                            .unwrap_or(0);
+                        total = end + 4 + len;
+                    }
                 }
+                requests.push(String::from_utf8_lossy(&buf).into_owned());
+                let resp = format!("HTTP/1.1 {status} X\r\nContent-Length: 0\r\n\r\n");
+                stream.write_all(resp.as_bytes()).unwrap();
             }
-            let _ = String::from_utf8_lossy(&req).into_owned();
-            stream
-                .write_all(format!("{status}\r\nContent-Length: 0\r\n\r\n").as_bytes())
-                .unwrap();
-            stream.shutdown(std::net::Shutdown::Write).unwrap();
-            std::thread::sleep(std::time::Duration::from_millis(50));
+            requests
         });
         (format!("http://{}", addr), handle)
     }
@@ -503,7 +440,7 @@ mod tests {
 
     #[test]
     fn drain_acks_on_success() {
-        let (url, handle) = mock_server("HTTP/1.1 200 OK");
+        let (url, handle) = mock(&[200]);
         let dir = drain_spool_dir("ok");
         std::fs::create_dir_all(&dir).unwrap();
         let spool = Spool::new(dir.clone());
@@ -519,7 +456,7 @@ mod tests {
 
     #[test]
     fn drain_keeps_events_on_500() {
-        let (url, handle) = mock_server("HTTP/1.1 500 Internal Server Error");
+        let (url, handle) = mock(&[500]);
         let dir = drain_spool_dir("500");
         std::fs::create_dir_all(&dir).unwrap();
         let spool = Spool::new(dir.clone());
@@ -535,7 +472,7 @@ mod tests {
 
     #[test]
     fn drain_keeps_spool_on_401() {
-        let (url, handle) = mock_server("HTTP/1.1 401 Unauthorized");
+        let (url, handle) = mock(&[401]);
         let dir = drain_spool_dir("401");
         std::fs::create_dir_all(&dir).unwrap();
         let spool = Spool::new(dir.clone());
@@ -555,7 +492,7 @@ mod tests {
 
     #[test]
     fn drain_drops_on_400() {
-        let (url, handle) = mock_server("HTTP/1.1 400 Bad Request");
+        let (url, handle) = mock(&[400]);
         let dir = drain_spool_dir("400");
         std::fs::create_dir_all(&dir).unwrap();
         let spool = Spool::new(dir.clone());
@@ -569,7 +506,7 @@ mod tests {
 
     #[test]
     fn drain_defers_on_429_rate_limit() {
-        let (url, handle) = mock_server("HTTP/1.1 429 Too Many Requests");
+        let (url, handle) = mock(&[429]);
         let dir = drain_spool_dir("429");
         std::fs::create_dir_all(&dir).unwrap();
         let spool = Spool::new(dir.clone());
@@ -585,48 +522,21 @@ mod tests {
 
     #[test]
     fn drain_chunks_large_files() {
-        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-        let addr = listener.local_addr().unwrap();
-        let requests = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
-        let reqs = requests.clone();
-        let handle = std::thread::spawn(move || {
-            for _ in 0..3 {
-                let (mut stream, _) = listener.accept().unwrap();
-                reqs.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-                stream
-                    .set_read_timeout(Some(std::time::Duration::from_millis(200)))
-                    .unwrap();
-                let mut req = Vec::new();
-                loop {
-                    let mut chunk = [0u8; 4096];
-                    match stream.read(&mut chunk) {
-                        Ok(0) => break,
-                        Ok(n) => req.extend_from_slice(&chunk[..n]),
-                        Err(_) => break, // read timeout: client finished sending
-                    }
-                }
-                let _ = String::from_utf8_lossy(&req).into_owned();
-                stream
-                    .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n")
-                    .unwrap();
-                stream.shutdown(std::net::Shutdown::Write).unwrap();
-                std::thread::sleep(std::time::Duration::from_millis(50));
-            }
-        });
+        let (url, handle) = mock(&[200, 200, 200]);
         let dir = drain_spool_dir("chunks");
         std::fs::create_dir_all(&dir).unwrap();
         let spool = Spool::new(dir.clone());
         let events: Vec<AgentEvent> = (0..1100).map(sample_event).collect();
         spool.append(&events).unwrap();
-        let stats = spool.drain(&format!("http://{}", addr), "secret-token");
-        handle.join().unwrap();
-        assert_eq!(stats.delivered, 1100);
-        assert_eq!(stats.dropped, 0);
-        assert_eq!(stats.deferred, 0);
+        let stats = spool.drain(&url, "secret-token");
         assert_eq!(
-            requests.load(std::sync::atomic::Ordering::SeqCst),
+            handle.join().unwrap().len(),
             3,
             "1100 events must span 3 chunks (512+512+76), not one request"
+        );
+        assert_eq!(
+            (stats.delivered, stats.dropped, stats.deferred),
+            (1100, 0, 0)
         );
         assert!(spool.read_all().is_empty(), "delivered file must be acked");
         std::fs::remove_dir_all(&dir).ok();
@@ -634,51 +544,18 @@ mod tests {
 
     #[test]
     fn drain_keeps_file_after_partial_chunk_failure() {
-        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-        let addr = listener.local_addr().unwrap();
-        let requests = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
-        let reqs = requests.clone();
-        let handle = std::thread::spawn(move || {
-            // request 1 → 200, request 2 → 500
-            for _ in 0..2 {
-                if let Ok((mut stream, _)) = listener.accept() {
-                    stream
-                        .set_read_timeout(Some(std::time::Duration::from_millis(200)))
-                        .unwrap();
-                    let mut req = Vec::new();
-                    loop {
-                        let mut chunk = [0u8; 4096];
-                        match stream.read(&mut chunk) {
-                            Ok(0) => break,
-                            Ok(n) => req.extend_from_slice(&chunk[..n]),
-                            Err(_) => break, // read timeout: client finished sending
-                        }
-                    }
-                    let _ = String::from_utf8_lossy(&req).into_owned();
-                    let n = reqs.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-                    let status = if n == 0 {
-                        "HTTP/1.1 200 OK"
-                    } else {
-                        "HTTP/1.1 500 Internal Server Error"
-                    };
-                    let resp = format!("{status}\r\nContent-Length: 0\r\n\r\n");
-                    stream.write_all(resp.as_bytes()).unwrap();
-                    stream.shutdown(std::net::Shutdown::Write).unwrap();
-                    std::thread::sleep(std::time::Duration::from_millis(50));
-                }
-            }
-        });
+        let (url, handle) = mock(&[200, 500]);
         let dir = drain_spool_dir("partial");
         std::fs::create_dir_all(&dir).unwrap();
         let spool = Spool::new(dir.clone());
         let events: Vec<AgentEvent> = (0..600).map(sample_event).collect();
         spool.append(&events).unwrap();
-        let url = format!("http://{}", addr);
         let stats = spool.drain(&url, "secret-token");
         handle.join().unwrap();
-        assert_eq!(stats.delivered, 512);
-        assert_eq!(stats.deferred, 88);
-        assert_eq!(stats.dropped, 0);
+        assert_eq!(
+            (stats.delivered, stats.deferred, stats.dropped),
+            (512, 88, 0)
+        );
         assert_eq!(
             spool.count(),
             600,

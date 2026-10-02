@@ -788,7 +788,7 @@ async fn scan_loop(state: crate::app::AppState) {
                         .unwrap_or_default();
                     let channels = crate::dispatch::channels_for_moment(
                         &actions,
-                        &crate::notify::channels_for(&state.notify, &inc.severity),
+                        &crate::notify::channels_for(&state.cfg.notify, &inc.severity),
                         crate::dispatch::Moment::Incident,
                     );
                     if channels.is_empty() {

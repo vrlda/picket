@@ -425,11 +425,11 @@ pub fn update_chat_and_text(update: &serde_json::Value) -> Option<(i64, String)>
     Some((chat, text))
 }
 
-/// getUpdates result array (blocking). `offset` = first update to fetch
-/// (last processed update_id + 1), so processed updates are confirmed and
-/// never re-fetched; `long_poll_secs` > 0 holds the request open until an
-/// update arrives (instant replies without hammering the API).
-fn resolve_updates_sync(
+/// getUpdates result array. `offset` = first update to fetch (last
+/// processed update_id + 1), so processed updates are confirmed and never
+/// re-fetched; `long_poll_secs` > 0 holds the request open until an update
+/// arrives (instant replies without hammering the API).
+pub async fn resolve_updates(
     api_base: &str,
     token: &str,
     offset: Option<i64>,
@@ -444,46 +444,19 @@ fn resolve_updates_sync(
     if long_poll_secs > 0 {
         url.push_str(&format!("{sep}timeout={long_poll_secs}"));
     }
-    let result = telegram_get(&url, long_poll_secs + 10)?;
+    let result = tokio::task::spawn_blocking(move || telegram_get(&url, long_poll_secs + 10))
+        .await
+        .map_err(|e| e.to_string())??;
     Ok(result.as_array().cloned().unwrap_or_default())
 }
 
-/// Async getUpdates (the blocking ureq call runs in spawn_blocking — async
-/// callers must not stall a worker).
-pub async fn resolve_updates(
-    api_base: &str,
-    token: &str,
-    offset: Option<i64>,
-    long_poll_secs: u64,
-) -> Result<Vec<serde_json::Value>, String> {
-    let base = api_base.to_string();
-    let token = token.to_string();
-    tokio::task::spawn_blocking(move || resolve_updates_sync(&base, &token, offset, long_poll_secs))
+/// `deliver` off the async runtime (ureq blocks; async callers must not
+/// stall a worker).
+pub async fn deliver_async(url: &str, payload: &str) -> Result<(), String> {
+    let (url, payload) = (url.to_string(), payload.to_string());
+    tokio::task::spawn_blocking(move || deliver(&url, &payload))
         .await
         .map_err(|e| e.to_string())?
-}
-
-/// Direct sendMessage to a specific chat. The blocking ureq call runs in
-/// spawn_blocking (async callers must not stall a worker).
-pub async fn send_to_chat(
-    api_base: &str,
-    token: &str,
-    chat_id: i64,
-    text: &str,
-) -> Result<(), String> {
-    let url = telegram_method_url(api_base, token, "sendMessage");
-    let body = telegram_message_body(chat_id, text, None);
-    tokio::task::spawn_blocking(move || deliver(&url, &body))
-        .await
-        .map_err(|e| e.to_string())?
-}
-
-/// Best-effort deleteMessage (used to remove the password the operator just
-/// typed from the chat history).
-async fn delete_message(api_base: &str, token: &str, chat_id: i64, message_id: i64) {
-    let url = telegram_method_url(api_base, token, "deleteMessage");
-    let body = serde_json::json!({ "chat_id": chat_id, "message_id": message_id }).to_string();
-    let _ = tokio::task::spawn_blocking(move || deliver(&url, &body)).await;
 }
 
 /// Module-level client built once from the configured token. Token changes
@@ -667,12 +640,7 @@ pub async fn notify_incident(
             );
             continue;
         }
-        let url2 = url.clone();
-        let payload2 = payload.clone();
-        let ok = tokio::task::spawn_blocking(move || deliver(&url2, &payload2))
-            .await
-            .unwrap_or_else(|_| Err("join failed".into()));
-        if let Err(e) = ok {
+        if let Err(e) = deliver_async(&url, &payload).await {
             eprintln!("notify {} failed: {}", channel, e);
             failed.push((url, payload));
         }
@@ -760,7 +728,7 @@ pub fn spawn_retry_loop(state: crate::app::AppState) {
 /// and log exactly what the operator still has to do, then start the bot
 /// loop (registration + alert buttons).
 pub async fn start_telegram(state: crate::app::AppState) {
-    let Some(client) = configured_telegram(&state.notify) else {
+    let Some(client) = configured_telegram(&state.cfg.notify) else {
         return;
     };
     restore_telegram_chat(&state.pool, client).await;
@@ -793,11 +761,11 @@ pub async fn start_telegram(state: crate::app::AppState) {
 /// Acknowledge/Resolve buttons on alerts. Runs whenever a bot token is set —
 /// even with a pinned chat, button presses arrive through getUpdates.
 pub fn spawn_telegram_bot(state: crate::app::AppState) {
-    let Some(client) = configured_telegram(&state.notify) else {
+    let Some(client) = configured_telegram(&state.cfg.notify) else {
         return;
     };
     let pool = state.pool.clone();
-    let pinned = state.notify.telegram_chat_id.is_some();
+    let pinned = state.cfg.notify.telegram_chat_id.is_some();
     tokio::spawn(crate::supervise::spawn_supervised(
         "telegram-bot",
         move || {
@@ -928,9 +896,7 @@ impl TelegramBot {
     async fn register(&mut self, chat: i64) {
         *self.client.chat_id.lock().unwrap() = Some(chat);
         persist_telegram_chat(&self.pool, self.client).await;
-        let _ = send_to_chat(
-            &self.api_base,
-            &self.client.token,
+        self.say(
             chat,
             "Chat registered — Watchtower alerts will be sent here.",
         )
@@ -958,7 +924,9 @@ impl TelegramBot {
                 self.awaiting.remove(&chat);
                 self.failures.remove(&chat);
                 if let Some(message_id) = u["message"]["message_id"].as_i64() {
-                    delete_message(&self.api_base, &self.client.token, chat, message_id).await;
+                    // remove the password from the chat history (best effort)
+                    let body = serde_json::json!({ "chat_id": chat, "message_id": message_id });
+                    let _ = self.call("deleteMessage", body).await;
                 }
                 self.register(chat).await;
                 return;
@@ -976,7 +944,7 @@ impl TelegramBot {
             }
             _ => return,
         };
-        let _ = send_to_chat(&self.api_base, &self.client.token, chat, reply).await;
+        self.say(chat, reply).await;
     }
 
     /// An Acknowledge/Resolve press. Only presses from the registered chat
@@ -1074,9 +1042,7 @@ impl TelegramBot {
         if let Some(kb) = incident_keyboard(id, &current_status) {
             body["reply_markup"] = kb;
         }
-        let url = telegram_method_url(&self.api_base, &self.client.token, "editMessageText");
-        let body = body.to_string();
-        if let Ok(Err(e)) = tokio::task::spawn_blocking(move || deliver(&url, &body)).await {
+        if let Err(e) = self.call("editMessageText", body).await {
             // "message is not modified" is expected when nothing changed
             if !e.contains("not modified") {
                 eprintln!("telegram: failed to update alert message: {e}");
@@ -1084,12 +1050,26 @@ impl TelegramBot {
         }
     }
 
+    /// POST a Bot API method.
+    async fn call(&self, method: &str, body: serde_json::Value) -> Result<(), String> {
+        let url = telegram_method_url(&self.api_base, &self.client.token, method);
+        deliver_async(&url, &body.to_string()).await
+    }
+
+    async fn say(&self, chat: i64, text: &str) {
+        let _ = self
+            .call(
+                "sendMessage",
+                serde_json::json!({ "chat_id": chat, "text": text }),
+            )
+            .await;
+    }
+
     /// answerCallbackQuery — stops the button's loading spinner and shows a
     /// short toast to the person who pressed it.
     async fn answer(&self, query_id: &str, text: &str) {
-        let url = telegram_method_url(&self.api_base, &self.client.token, "answerCallbackQuery");
-        let body = serde_json::json!({ "callback_query_id": query_id, "text": text }).to_string();
-        let _ = tokio::task::spawn_blocking(move || deliver(&url, &body)).await;
+        let body = serde_json::json!({ "callback_query_id": query_id, "text": text });
+        let _ = self.call("answerCallbackQuery", body).await;
     }
 }
 
@@ -1105,24 +1085,16 @@ async fn retry_loop(state: crate::app::AppState) {
         let Some((url, payload, attempts)) = item else {
             continue;
         };
-        let url2 = url.clone();
-        let payload2 = payload.clone();
-        let ok = tokio::task::spawn_blocking(move || deliver(&url2, &payload2))
-            .await
-            .unwrap_or_else(|_| Err("join failed".into()));
-        match ok {
-            Ok(()) => {}
-            Err(e) => {
-                eprintln!(
-                    "notify retry failed ({e}); requeueing {}",
-                    url_for_log(&url)
-                );
-                state
-                    .notify_queue
-                    .lock()
-                    .unwrap()
-                    .retry(url, payload, attempts + 1);
-            }
+        if let Err(e) = deliver_async(&url, &payload).await {
+            eprintln!(
+                "notify retry failed ({e}); requeueing {}",
+                url_for_log(&url)
+            );
+            state
+                .notify_queue
+                .lock()
+                .unwrap()
+                .retry(url, payload, attempts + 1);
         }
     }
 }

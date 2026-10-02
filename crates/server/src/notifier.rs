@@ -34,7 +34,7 @@ pub async fn notify_loop(
 }
 
 pub fn spawn_notifier(state: AppState, rx: tokio::sync::mpsc::Receiver<serde_json::Value>) {
-    let cfg = state.notify.clone();
+    let cfg = state.cfg.notify.clone();
     let queue = state.notify_queue.clone();
     let pool = state.pool.clone();
     tokio::spawn(async move {

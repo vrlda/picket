@@ -25,14 +25,14 @@ async fn main() {
             std::process::exit(1);
         }
     };
-    let mut state = watchtower_server::app::AppState::new(pool, cfg.clone()).await;
+    let state = watchtower_server::app::AppState::new(pool, cfg.clone()).await;
     watchtower_server::probes::spawn_probe_tasks(state.clone(), cfg.probes.clone());
     watchtower_server::correlation::spawn_runner(state.clone());
     watchtower_server::watchdog::spawn_watchdog(state.clone());
     watchtower_server::notify::spawn_retry_loop(state.clone());
     watchtower_server::agent_tasks::spawn_sweeper(state.clone());
     tokio::spawn(watchtower_server::notify::start_telegram(state.clone()));
-    if let Some(rx) = state.notify_rx.take() {
+    if let Some(rx) = state.take_notify_rx() {
         watchtower_server::notifier::spawn_notifier(state.clone(), rx);
     }
     let app = watchtower_server::app::build_app(state).await;

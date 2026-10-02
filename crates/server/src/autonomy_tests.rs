@@ -222,8 +222,8 @@ async fn measurement_conditions_open_business_incidents() {
 
 #[tokio::test]
 async fn agent_lifecycle_end_to_end() {
-    let mut s = state().await;
-    let mut notifications = s.notify_rx.take().unwrap();
+    let s = state().await;
+    let mut notifications = s.take_notify_rx().unwrap();
     let evs: Vec<_> = (0..6)
         .map(|i| failure(&format!("a{i}"), *T0 + i * 1000, "mer_a"))
         .collect();
@@ -481,8 +481,8 @@ async fn agent_lifecycle_end_to_end() {
 
 #[tokio::test]
 async fn escalation_retry_and_lease_expiry() {
-    let mut s = state().await;
-    let mut notifications = s.notify_rx.take().unwrap();
+    let s = state().await;
+    let mut notifications = s.take_notify_rx().unwrap();
     let app = build_app(s.clone()).await;
     let claim = |app: axum::Router| async move {
         let (st, body) = call(
@@ -646,7 +646,7 @@ async fn unclaimed_task_alerts_once() {
     let mut s = state().await;
     // profile that no runner matches
     s.cfg.agent_profiles.get_mut("payment_api").unwrap().labels = vec!["nobody".into()];
-    let mut notifications = s.notify_rx.take().unwrap();
+    let mut notifications = s.take_notify_rx().unwrap();
     store(
         &s,
         &(0..5)
