@@ -169,25 +169,13 @@ async fn ping() -> Json<serde_json::Value> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use axum::body::Body;
-    use http::{Request, StatusCode};
-    use tower::ServiceExt;
+    use crate::test_util::{call, get_ok, post};
+    use http::StatusCode;
 
     #[tokio::test]
     async fn ping_returns_ok() {
         let app = build_app(AppState::for_tests().await).await;
-        let resp = app
-            .clone()
-            .oneshot(
-                Request::builder()
-                    .uri("/v1/ping")
-                    .header("authorization", "Bearer test-token")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(resp.status(), StatusCode::OK);
+        assert_eq!(get_ok(&app, "/v1/ping").await["ok"], true);
     }
 
     #[tokio::test]
@@ -206,15 +194,7 @@ mod tests {
                 "frames": [{"file": "app.py", "line": 42, "function": "validate"}]
             }
         }"#;
-        let req = Request::builder()
-            .method("POST")
-            .uri("/v1/errors")
-            .header("content-type", "application/json")
-            .header("authorization", "Bearer test-token")
-            .body(Body::from(body))
-            .unwrap();
-        let resp = app.clone().oneshot(req).await.unwrap();
-        assert_eq!(resp.status(), StatusCode::OK);
+        assert_eq!(post(&app, "/v1/errors", body).await.0, StatusCode::OK);
         let row: (String, String, String) =
             sqlx::query_as("SELECT key, severity, kind FROM events WHERE host_id = 'web-1'")
                 .fetch_one(&pool)
@@ -225,19 +205,7 @@ mod tests {
         assert_eq!(row.1, "Critical", "error level → Critical");
         assert_eq!(row.2, "AppException");
         // second identical exception → same key (server-side dedup + grouping)
-        let resp2 = app
-            .oneshot(
-                Request::builder()
-                    .method("POST")
-                    .uri("/v1/errors")
-                    .header("content-type", "application/json")
-                    .header("authorization", "Bearer test-token")
-                    .body(Body::from(body))
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(resp2.status(), StatusCode::OK);
+        assert_eq!(post(&app, "/v1/errors", body).await.0, StatusCode::OK);
         let (n,): (i64,) = sqlx::query_as("SELECT count(*) FROM events WHERE host_id = 'web-1'")
             .fetch_one(&pool)
             .await
@@ -247,28 +215,11 @@ mod tests {
 
     #[tokio::test]
     async fn errors_endpoint_auth_and_bad_body() {
-        let state = AppState::for_tests().await;
-        let app = build_app(state).await;
-        let req = Request::builder()
-            .method("POST")
-            .uri("/v1/errors")
-            .header("content-type", "application/json")
-            .body(Body::from(r#"{"host_id":"h","exception":{"type":"T"}}"#))
-            .unwrap();
-        let resp = app.clone().oneshot(req).await.unwrap();
-        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED, "no bearer → 401");
-        let req2 = Request::builder()
-            .method("POST")
-            .uri("/v1/errors")
-            .header("content-type", "application/json")
-            .header("authorization", "Bearer test-token")
-            .body(Body::from("not json"))
-            .unwrap();
-        let resp2 = app.oneshot(req2).await.unwrap();
-        assert_eq!(
-            resp2.status(),
-            StatusCode::BAD_REQUEST,
-            "malformed body → 400"
-        );
+        let app = build_app(AppState::for_tests().await).await;
+        let body = r#"{"host_id":"h","exception":{"type":"T"}}"#;
+        let (status, _) = call(&app, "POST", "/v1/errors", None, Some(body)).await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED, "no bearer → 401");
+        let (status, _) = post(&app, "/v1/errors", "not json").await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "malformed body → 400");
     }
 }

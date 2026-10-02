@@ -54,43 +54,21 @@ pub fn spawn_notifier(state: AppState, rx: tokio::sync::mpsc::Receiver<serde_jso
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::io::{Read, Write};
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;
 
     #[tokio::test]
     async fn consumes_incidents_and_delivers() {
         let (tx, rx) = tokio::sync::mpsc::channel::<serde_json::Value>(64);
-        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-        let addr = listener.local_addr().unwrap();
-        let handle = std::thread::spawn(move || {
-            let (mut stream, _) = listener.accept().unwrap();
-            stream
-                .set_read_timeout(Some(std::time::Duration::from_millis(200)))
-                .unwrap();
-            let mut buf = [0u8; 65536];
-            loop {
-                match stream.read(&mut buf) {
-                    Ok(0) | Err(_) => break,
-                    Ok(_) => continue,
-                }
-            }
-            let req = String::from_utf8_lossy(&buf).into_owned();
-            stream
-                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok")
-                .unwrap();
-            req
-        });
+        // capture delivery: a local webhook
+        let (url, log) = crate::test_util::mock_http(200, "ok", 1);
         let cfg = crate::notify::NotifyConfig {
-            webhook_url: format!("http://{}", addr),
-            slack_url: String::new(),
-            telegram_token: None,
-            telegram_chat_id: None,
-            telegram_password: None,
+            webhook_url: url.clone(),
             routing: std::collections::HashMap::from([
                 ("Critical".into(), vec!["webhook".into()]),
                 ("Warning".into(), vec!["webhook".into()]),
             ]),
+            ..Default::default()
         };
         let delivered = Arc::new(AtomicUsize::new(0));
         let d2 = delivered.clone();
@@ -111,7 +89,7 @@ mod tests {
             1,
             "one incident delivered"
         );
-        let req = handle.join().unwrap();
+        let req = log.lock().unwrap()[0].clone();
         assert!(req.contains("watchtower.incident"));
         task.abort();
     }

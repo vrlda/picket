@@ -3,10 +3,8 @@
 //! verified recovery. Uses the real router (tower oneshot) and the real
 //! correlation scan with explicit clocks.
 
-use axum::body::Body;
-use axum::http::{Request, StatusCode};
+use axum::http::StatusCode;
 use serde_json::{json, Value};
-use tower::ServiceExt;
 
 use crate::app::{build_app, AppState};
 use crate::correlation::{merged_rules, scan_and_absorb, Rule};
@@ -117,32 +115,8 @@ async fn call(
     token: &str,
     body: Option<Value>,
 ) -> (StatusCode, Value) {
-    let mut req = Request::builder()
-        .method(method)
-        .uri(uri)
-        .header("authorization", format!("Bearer {token}"));
-    if body.is_some() {
-        req = req.header("content-type", "application/json");
-    }
-    let resp = app
-        .clone()
-        .oneshot(
-            req.body(
-                body.map(|b| Body::from(b.to_string()))
-                    .unwrap_or_else(Body::empty),
-            )
-            .unwrap(),
-        )
-        .await
-        .unwrap();
-    let status = resp.status();
-    let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
-        .await
-        .unwrap();
-    (
-        status,
-        serde_json::from_slice(&bytes).unwrap_or(Value::Null),
-    )
+    let body = body.map(|b| b.to_string());
+    crate::test_util::call(app, method, uri, Some(token), body.as_deref()).await
 }
 
 async fn task_count(s: &AppState) -> i64 {

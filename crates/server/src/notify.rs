@@ -1132,7 +1132,6 @@ mod tests {
     use super::*;
     use crate::api_incidents::incident_json;
     use crate::incidents::{Incident, IncidentEvent, IncidentStatus};
-    use std::io::{Read, Write};
 
     fn sample_incident() -> Incident {
         Incident {
@@ -1280,151 +1279,31 @@ mod tests {
         assert!(r.get("Info").unwrap().is_empty());
     }
 
+    const BOT_OK: &str = r#"{"ok":true,"result":true}"#;
+
     #[test]
-    fn telegram_send_posts_to_bot_api() {
-        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-        let addr = listener.local_addr().unwrap();
-        let handle = std::thread::spawn(move || {
-            let (mut stream, _) = listener.accept().unwrap();
-            stream
-                .set_read_timeout(Some(std::time::Duration::from_millis(5000)))
-                .unwrap();
-            let mut buf = [0u8; 65536];
-            let mut got = 0;
-            let mut total = usize::MAX; // full request: headers + body
-            loop {
-                if got >= total {
-                    break;
-                }
-                match stream.read(&mut buf[got..]) {
-                    Ok(0) | Err(_) => break,
-                    Ok(n) => {
-                        got += n;
-                        if total == usize::MAX {
-                            if let Some(end) = buf[..got].windows(4).position(|w| w == b"\r\n\r\n")
-                            {
-                                let head_end = end + 4;
-                                let head = String::from_utf8_lossy(&buf[..end]);
-                                let clen = head
-                                    .lines()
-                                    .find_map(|l| {
-                                        let (name, value) = l.split_once(':')?;
-                                        name.trim()
-                                            .eq_ignore_ascii_case("content-length")
-                                            .then(|| value.trim().parse::<usize>().unwrap_or(0))
-                                    })
-                                    .unwrap_or(0);
-                                total = head_end + clen;
-                            }
-                        }
-                    }
-                }
-            }
-            let req = String::from_utf8_lossy(&buf[..got]).into_owned();
-            let body = "{\"ok\":true,\"result\":{}}";
-            let resp = format!(
-                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
-                body.len(),
-                body
-            );
-            stream.write_all(resp.as_bytes()).unwrap();
-            req
-        });
-        let base = format!("http://{}", addr);
-        let client = TelegramClient::new("test-token".into(), Some(42)); // pre-seeded (auto-resolve covered elsewhere)
-        let ok = telegram_send(&client, &base, "hello", None).unwrap();
-        assert!(ok);
-        let req = handle.join().unwrap();
-        assert!(req.contains("/bottest-token/sendMessage"));
-        assert!(req.contains("chat_id"));
-        assert!(req.contains("hello"));
+    fn telegram_send_posts_to_the_registered_chat() {
+        let (base, log) = crate::test_util::mock_http(200, BOT_OK, 1);
+        let client = TelegramClient::new("test-token".into(), Some(42));
+        assert!(telegram_send(&client, &base, "hello", None).unwrap());
+        let req = log.lock().unwrap()[0].clone();
+        assert!(req.starts_with("POST /bottest-token/sendMessage"), "{req}");
+        let body: serde_json::Value =
+            serde_json::from_str(crate::test_util::req_body(&req)).unwrap();
+        assert_eq!(body["chat_id"], 42);
+        assert_eq!(body["text"], "hello");
     }
 
     #[test]
-    fn telegram_pinned_chat_skips_get_updates() {
-        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-        let addr = listener.local_addr().unwrap();
-        let handle = std::thread::spawn(move || {
-            let (mut stream, _) = listener.accept().unwrap();
-            stream
-                .set_read_timeout(Some(std::time::Duration::from_millis(200)))
-                .unwrap();
-            let mut buf = [0u8; 65536];
-            let mut n = 0;
-            loop {
-                match stream.read(&mut buf[n..]) {
-                    Ok(0) | Err(_) => break,
-                    Ok(read) => {
-                        n += read;
-                        let text = String::from_utf8_lossy(&buf[..n]);
-                        if let Some(pos) = text.find("\r\n\r\n") {
-                            let cl = text[..pos]
-                                .lines()
-                                .find_map(|l| l.strip_prefix("Content-Length:"))
-                                .and_then(|v| v.trim().parse::<usize>().ok())
-                                .unwrap_or(0);
-                            if n >= pos + 4 + cl {
-                                break;
-                            }
-                        }
-                    }
-                }
-            }
-            let text = String::from_utf8_lossy(&buf[..n]).into_owned();
-            assert!(
-                !text.contains("getUpdates"),
-                "pinned chat must never call getUpdates, got: {}",
-                text.lines().next().unwrap_or("")
-            );
-            let body = r#"{"ok":true,"result":{}}"#;
-            let resp = format!(
-                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
-                body.len(),
-                body
-            );
-            stream.write_all(resp.as_bytes()).unwrap();
-        });
-        let base = format!("http://{}", addr);
-        let client = TelegramClient::new("tok".into(), Some(999));
-        let ok = telegram_send(&client, &base, "hello", None).unwrap();
-        assert!(ok);
-        assert_eq!(*client.chat_id.lock().unwrap(), Some(999));
-        handle.join().unwrap();
-    }
-
-    #[test]
-    fn telegram_password_blocks_legacy_auto_resolve() {
-        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-        listener.set_nonblocking(true).unwrap();
-        let addr = listener.local_addr().unwrap();
-        let handle = std::thread::spawn(move || {
-            // if getUpdates is ever requested this mock would answer — the
-            // assertion below proves it was never reached. Bounded accept
-            // loop: if no connection arrives, the thread exits instead of
-            // blocking join() forever.
-            for _ in 0..100 {
-                match listener.accept() {
-                    Ok((mut stream, _)) => {
-                        let mut buf = [0u8; 8192];
-                        let _ = stream.read(&mut buf);
-                        let body = r#"{"ok":true,"result":[{"update_id":1,"message":{"chat":{"id":1},"from":{"is_bot":false},"text":"/start"}}]}"#;
-                        let resp = format!("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}", body.len(), body);
-                        let _ = stream.write_all(resp.as_bytes());
-                        return;
-                    }
-                    Err(_) => std::thread::sleep(std::time::Duration::from_millis(10)),
-                }
-            }
-        });
-        let base = format!("http://{}", addr);
-        let client = TelegramClient::with_password("tok".into(), None, Some("hunter2".into()));
-        let ok = telegram_send(&client, &base, "hello", None).unwrap();
-        assert!(
-            !ok,
-            "password set + no chat → must NOT resolve, just report unregistered"
-        );
-        assert_eq!(*client.chat_id.lock().unwrap(), None);
-        handle.join().unwrap();
+    fn telegram_send_without_chat_makes_no_request() {
+        // discovery belongs to the bot loop; an unreachable base proves no
+        // request is attempted
+        for client in [
+            TelegramClient::new("tok".into(), None),
+            TelegramClient::with_password("tok".into(), None, Some("hunter2".into())),
+        ] {
+            assert!(!telegram_send(&client, "http://127.0.0.1:1", "hello", None).unwrap());
+        }
     }
 
     #[test]
@@ -1552,28 +1431,13 @@ mod tests {
 
     #[test]
     fn telegram_errors_never_leak_the_token() {
-        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-        let addr = listener.local_addr().unwrap();
-        let handle = std::thread::spawn(move || {
-            let (mut stream, _) = listener.accept().unwrap();
-            stream
-                .set_read_timeout(Some(std::time::Duration::from_millis(300)))
-                .unwrap();
-            let mut buf = [0u8; 65536];
-            let _ = stream.read(&mut buf);
-            let body =
-                r#"{"ok":false,"error_code":400,"description":"Bad Request: chat not found"}"#;
-            let resp = format!(
-                "HTTP/1.1 400 Bad Request\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
-                body.len(),
-                body
-            );
-            stream.write_all(resp.as_bytes()).unwrap();
-        });
-        let base = format!("http://{}", addr);
+        let (base, _) = crate::test_util::mock_http(
+            400,
+            r#"{"ok":false,"error_code":400,"description":"Bad Request: chat not found"}"#,
+            1,
+        );
         let client = TelegramClient::new("123:SECRET".into(), Some(42));
         let err = telegram_send(&client, &base, "hello", None).unwrap_err();
-        handle.join().unwrap();
         assert!(
             err.contains("chat not found"),
             "description surfaced: {err}"
@@ -1608,72 +1472,9 @@ mod tests {
     }
     // ---------- Telegram bot (buttons, registration) ----------
 
-    /// Mock Bot API: answers every request with {"ok":true,"result":true}
-    /// and records "METHOD body" per request. Stops when `stop` is set.
-    type CallLog = std::sync::Arc<std::sync::Mutex<Vec<(String, String)>>>;
-
-    fn mock_bot_api() -> (
-        String,
-        CallLog,
-        std::sync::Arc<std::sync::atomic::AtomicBool>,
-    ) {
-        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-        listener.set_nonblocking(true).unwrap();
-        let addr = listener.local_addr().unwrap();
-        let log = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
-        let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-        let (log2, stop2) = (log.clone(), stop.clone());
-        std::thread::spawn(move || {
-            while !stop2.load(std::sync::atomic::Ordering::SeqCst) {
-                let Ok((mut stream, _)) = listener.accept() else {
-                    std::thread::sleep(std::time::Duration::from_millis(5));
-                    continue;
-                };
-                stream.set_nonblocking(false).unwrap();
-                stream
-                    .set_read_timeout(Some(std::time::Duration::from_millis(2000)))
-                    .unwrap();
-                let mut buf = Vec::new();
-                let mut chunk = [0u8; 8192];
-                let mut total = usize::MAX;
-                while buf.len() < total {
-                    match stream.read(&mut chunk) {
-                        Ok(0) | Err(_) => break,
-                        Ok(n) => buf.extend_from_slice(&chunk[..n]),
-                    }
-                    if total == usize::MAX {
-                        if let Some(end) = buf.windows(4).position(|w| w == b"\r\n\r\n") {
-                            let head = String::from_utf8_lossy(&buf[..end]).to_lowercase();
-                            let clen = head
-                                .lines()
-                                .find_map(|l| l.strip_prefix("content-length:"))
-                                .and_then(|v| v.trim().parse::<usize>().ok())
-                                .unwrap_or(0);
-                            total = end + 4 + clen;
-                        }
-                    }
-                }
-                let text = String::from_utf8_lossy(&buf).into_owned();
-                let method = text
-                    .split_whitespace()
-                    .nth(1)
-                    .and_then(|path| path.rsplit('/').next())
-                    .unwrap_or("")
-                    .to_string();
-                let body = text.split("\r\n\r\n").nth(1).unwrap_or("").to_string();
-                log2.lock().unwrap().push((method, body));
-                let resp = r#"{"ok":true,"result":true}"#;
-                let _ = stream.write_all(
-                    format!(
-                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
-                        resp.len(),
-                        resp
-                    )
-                    .as_bytes(),
-                );
-            }
-        });
-        (format!("http://{}", addr), log, stop)
+    /// Mock Bot API answering every call with ok.
+    fn mock_bot_api() -> (String, std::sync::Arc<std::sync::Mutex<Vec<String>>>) {
+        crate::test_util::mock_http(200, BOT_OK, 100)
     }
 
     fn leak_client(c: TelegramClient) -> &'static TelegramClient {
@@ -1713,12 +1514,17 @@ mod tests {
         })
     }
 
-    fn calls(log: &std::sync::Mutex<Vec<(String, String)>>, method: &str) -> Vec<String> {
+    /// Bodies of the recorded Bot API calls to `method`.
+    fn calls(log: &std::sync::Mutex<Vec<String>>, method: &str) -> Vec<String> {
         log.lock()
             .unwrap()
             .iter()
-            .filter(|(m, _)| m == method)
-            .map(|(_, b)| b.clone())
+            .filter(|r| {
+                r.split_whitespace()
+                    .nth(1)
+                    .is_some_and(|p| p.ends_with(&format!("/{method}")))
+            })
+            .map(|r| crate::test_util::req_body(r).to_string())
             .collect()
     }
 
@@ -1755,7 +1561,7 @@ mod tests {
 
     #[tokio::test]
     async fn ack_button_acknowledges_and_updates_alert() {
-        let (base, log, stop) = mock_bot_api();
+        let (base, log) = mock_bot_api();
         let (pool, id) = bot_pool_with_incident().await;
         let client = leak_client(TelegramClient::new("1:t".into(), Some(42)));
         let mut bot = TelegramBot::new(pool.clone(), client, &base, true);
@@ -1779,12 +1585,11 @@ mod tests {
         // pressing Acknowledge again is harmless
         bot.handle_update(&callback(42, &format!("ack:{id}"))).await;
         assert!(calls(&log, "answerCallbackQuery")[1].contains("Already acknowledged"));
-        stop.store(true, std::sync::atomic::Ordering::SeqCst);
     }
 
     #[tokio::test]
     async fn resolve_button_resolves_and_removes_buttons() {
-        let (base, log, stop) = mock_bot_api();
+        let (base, log) = mock_bot_api();
         let (pool, id) = bot_pool_with_incident().await;
         let client = leak_client(TelegramClient::new("1:t".into(), Some(42)));
         let mut bot = TelegramBot::new(pool.clone(), client, &base, true);
@@ -1805,12 +1610,11 @@ mod tests {
             edit.get("reply_markup").is_none(),
             "no buttons once resolved"
         );
-        stop.store(true, std::sync::atomic::Ordering::SeqCst);
     }
 
     #[tokio::test]
     async fn buttons_only_work_from_the_registered_chat() {
-        let (base, log, stop) = mock_bot_api();
+        let (base, log) = mock_bot_api();
         let (pool, id) = bot_pool_with_incident().await;
         let client = leak_client(TelegramClient::new("1:t".into(), Some(42)));
         let mut bot = TelegramBot::new(pool.clone(), client, &base, true);
@@ -1826,12 +1630,11 @@ mod tests {
         // unknown incident → friendly answer, no edit
         bot.handle_update(&callback(42, "ack:nope")).await;
         assert!(calls(&log, "answerCallbackQuery")[1].contains("not found"));
-        stop.store(true, std::sync::atomic::Ordering::SeqCst);
     }
 
     #[tokio::test]
     async fn first_chat_is_discovered_and_persisted() {
-        let (base, log, stop) = mock_bot_api();
+        let (base, log) = mock_bot_api();
         let (pool, _) = bot_pool_with_incident().await;
         let client = leak_client(TelegramClient::new("2:t".into(), None));
         let mut bot = TelegramBot::new(pool.clone(), client, &base, false);
@@ -1848,12 +1651,11 @@ mod tests {
         let restored = TelegramClient::new("2:t".into(), None);
         restore_telegram_chat(&pool, &restored).await;
         assert_eq!(*restored.chat_id.lock().unwrap(), Some(5));
-        stop.store(true, std::sync::atomic::Ordering::SeqCst);
     }
 
     #[tokio::test]
     async fn password_handshake_registers_and_deletes_password() {
-        let (base, log, stop) = mock_bot_api();
+        let (base, log) = mock_bot_api();
         let (pool, _) = bot_pool_with_incident().await;
         let client = leak_client(TelegramClient::with_password(
             "3:t".into(),
@@ -1876,12 +1678,11 @@ mod tests {
         let deleted = calls(&log, "deleteMessage");
         assert_eq!(deleted.len(), 1);
         assert!(deleted[0].contains("\"message_id\":4"));
-        stop.store(true, std::sync::atomic::Ordering::SeqCst);
     }
 
     #[tokio::test]
     async fn pinned_chat_ignores_messages() {
-        let (base, log, stop) = mock_bot_api();
+        let (base, log) = mock_bot_api();
         let (pool, _) = bot_pool_with_incident().await;
         let client = leak_client(TelegramClient::new("4:t".into(), Some(1)));
         let mut bot = TelegramBot::new(pool, client, &base, true);
@@ -1891,6 +1692,5 @@ mod tests {
             .await;
         assert_eq!(*client.chat_id.lock().unwrap(), Some(1));
         assert!(log.lock().unwrap().is_empty());
-        stop.store(true, std::sync::atomic::Ordering::SeqCst);
     }
 }

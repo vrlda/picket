@@ -24,3 +24,6 @@ pub mod watchdog;
 
 #[cfg(test)]
 mod autonomy_tests;
+
+#[cfg(test)]
+mod test_util;

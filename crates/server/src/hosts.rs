@@ -101,73 +101,39 @@ pub async fn fetch_hosts(
 mod tests {
     use super::*;
     use crate::app::build_app;
-    use axum::body::Body;
-    use axum::http::{Request, StatusCode};
-    use tower::ServiceExt;
+    use crate::test_util::{call, get_ok, post};
+    use axum::http::StatusCode;
 
     fn hb_body(host: &str, ts: i64, queue: u64) -> String {
-        serde_json::json!({
-            "host_id": host,
-            "ts": ts,
-            "version": "0.1.0",
-            "queue_len": queue
-        })
-        .to_string()
+        json!({ "host_id": host, "ts": ts, "version": "0.1.0", "queue_len": queue }).to_string()
     }
 
     #[tokio::test]
     async fn heartbeat_registers_host_and_lists_it() {
         let app = build_app(AppState::for_tests().await).await;
-        let send = |app: axum::Router, body: String| {
-            let app = app.clone();
-            async move {
-                app.oneshot(
-                    Request::builder()
-                        .method("POST")
-                        .uri("/v1/heartbeat")
-                        .header("content-type", "application/json")
-                        .header("authorization", "Bearer test-token")
-                        .body(Body::from(body))
-                        .unwrap(),
-                )
-                .await
-                .unwrap()
-            }
-        };
         let before = crate::ingest::now_ms();
-        let resp = send(app.clone(), hb_body("h-1", 1000, 0)).await;
-        assert_eq!(resp.status(), StatusCode::OK);
-
-        let resp = send(app.clone(), hb_body("h-1", 2000, 2)).await;
-        assert_eq!(resp.status(), StatusCode::OK);
-
-        let resp = app
-            .clone()
-            .oneshot(
-                Request::builder()
-                    .uri("/v1/hosts")
-                    .header("authorization", "Bearer test-token")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(resp.status(), StatusCode::OK);
-        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
-            .await
-            .unwrap();
-        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(
+            post(&app, "/v1/heartbeat", &hb_body("h-1", 1000, 0))
+                .await
+                .0,
+            StatusCode::OK
+        );
+        assert_eq!(
+            post(&app, "/v1/heartbeat", &hb_body("h-1", 2000, 2))
+                .await
+                .0,
+            StatusCode::OK
+        );
+        let json = get_ok(&app, "/v1/hosts").await;
         let hosts = json["hosts"].as_array().unwrap();
         assert_eq!(hosts.len(), 1);
         assert_eq!(hosts[0]["host_id"], "h-1");
-        assert!(hosts[0]["first_seen"].as_i64().unwrap() >= before);
-        assert!(
-            hosts[0]["last_seen"].as_i64().unwrap() >= hosts[0]["first_seen"].as_i64().unwrap()
+        let (first, last) = (
+            hosts[0]["first_seen"].as_i64().unwrap(),
+            hosts[0]["last_seen"].as_i64().unwrap(),
         );
-        assert!(
-            hosts[0]["last_seen"].as_i64().unwrap() - hosts[0]["first_seen"].as_i64().unwrap()
-                < 5000
-        );
+        assert!(first >= before);
+        assert!(last >= first && last - first < 5000);
         assert_eq!(
             hosts[0]["queue_len"], 2,
             "queue_len round-trips (last POST wins)"
@@ -177,17 +143,10 @@ mod tests {
     #[tokio::test]
     async fn hosts_list_requires_auth() {
         let app = build_app(AppState::for_tests().await).await;
-        let resp = app
-            .clone()
-            .oneshot(
-                Request::builder()
-                    .uri("/v1/hosts")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+        assert_eq!(
+            call(&app, "GET", "/v1/hosts", None, None).await.0,
+            StatusCode::UNAUTHORIZED
+        );
     }
 
     #[tokio::test]
@@ -195,19 +154,16 @@ mod tests {
         let state = AppState::for_tests().await;
         let pool = state.pool.clone();
         let app = build_app(state).await;
-        let resp = app
-            .oneshot(
-                Request::builder()
-                    .method("POST")
-                    .uri("/v1/heartbeat")
-                    .header("content-type", "application/json")
-                    .header("authorization", "Bearer host-a-token")
-                    .body(Body::from(hb_body("spoofed-host", 1000, 0)))
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(resp.status(), StatusCode::OK);
+        let body = hb_body("spoofed-host", 1000, 0);
+        let (status, _) = call(
+            &app,
+            "POST",
+            "/v1/heartbeat",
+            Some("host-a-token"),
+            Some(&body),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
         let host: (String,) = sqlx::query_as("SELECT host_id FROM hosts")
             .fetch_one(&pool)
             .await

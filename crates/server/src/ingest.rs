@@ -143,9 +143,8 @@ pub fn now_ms() -> i64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use axum::body::Body;
-    use axum::http::{Request, StatusCode};
-    use tower::ServiceExt;
+    use crate::test_util::{call, post};
+    use axum::http::StatusCode;
 
     fn batch_body(n: usize) -> String {
         let batch: Vec<serde_json::Value> = (0..n)
@@ -168,24 +167,8 @@ mod tests {
     #[tokio::test]
     async fn ingest_stores_events_and_returns_counts() {
         let app = build_app(AppState::for_tests().await).await;
-        let resp = app
-            .clone()
-            .oneshot(
-                Request::builder()
-                    .method("POST")
-                    .uri("/v1/telemetry")
-                    .header("content-type", "application/json")
-                    .header("authorization", "Bearer test-token")
-                    .body(Body::from(batch_body(2)))
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(resp.status(), StatusCode::OK);
-        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
-            .await
-            .unwrap();
-        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        let (status, json) = post(&app, "/v1/telemetry", &batch_body(2)).await;
+        assert_eq!(status, StatusCode::OK);
         assert_eq!(json["accepted"], 2);
         assert_eq!(json["duplicates"], 0);
     }
@@ -193,38 +176,12 @@ mod tests {
     #[tokio::test]
     async fn ingest_deduplicates_by_event_id() {
         let app = build_app(AppState::for_tests().await).await;
-        let send = |app: axum::Router| {
-            let app = app.clone();
-            async move {
-                app.oneshot(
-                    Request::builder()
-                        .method("POST")
-                        .uri("/v1/telemetry")
-                        .header("content-type", "application/json")
-                        .header("authorization", "Bearer test-token")
-                        .body(Body::from(batch_body(1)))
-                        .unwrap(),
-                )
-                .await
-                .unwrap()
-            }
-        };
-        let first = send(app.clone()).await;
-        assert_eq!(first.status(), StatusCode::OK);
-        let first_body = axum::body::to_bytes(first.into_body(), usize::MAX)
-            .await
-            .unwrap();
-        let first_json: serde_json::Value = serde_json::from_slice(&first_body).unwrap();
-        assert_eq!(first_json["accepted"], 1);
-
-        let second = send(app.clone()).await;
-        assert_eq!(second.status(), StatusCode::OK);
-        let second_body = axum::body::to_bytes(second.into_body(), usize::MAX)
-            .await
-            .unwrap();
-        let second_json: serde_json::Value = serde_json::from_slice(&second_body).unwrap();
-        assert_eq!(second_json["accepted"], 0);
-        assert_eq!(second_json["duplicates"], 1);
+        let (_, first) = post(&app, "/v1/telemetry", &batch_body(1)).await;
+        assert_eq!(first["accepted"], 1);
+        let (status, second) = post(&app, "/v1/telemetry", &batch_body(1)).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(second["accepted"], 0);
+        assert_eq!(second["duplicates"], 1);
     }
 
     #[tokio::test]
@@ -232,20 +189,15 @@ mod tests {
         let state = AppState::for_tests().await;
         let pool = state.pool.clone();
         let app = build_app(state).await;
-        let resp = app
-            .clone()
-            .oneshot(
-                Request::builder()
-                    .method("POST")
-                    .uri("/v1/telemetry")
-                    .header("content-type", "application/json")
-                    .header("authorization", "Bearer host-a-token")
-                    .body(Body::from(batch_body(1)))
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(resp.status(), StatusCode::OK);
+        let (status, _) = call(
+            &app,
+            "POST",
+            "/v1/telemetry",
+            Some("host-a-token"),
+            Some(&batch_body(1)),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
         let row: (String,) = sqlx::query_as("SELECT host_id FROM events WHERE id = 'e-0'")
             .fetch_one(&pool)
             .await
@@ -254,58 +206,20 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn ingest_rejects_missing_token() {
+    async fn ingest_rejects_missing_or_unknown_token() {
         let app = build_app(AppState::for_tests().await).await;
-        let resp = app
-            .clone()
-            .oneshot(
-                Request::builder()
-                    .method("POST")
-                    .uri("/v1/telemetry")
-                    .header("content-type", "application/json")
-                    .body(Body::from(batch_body(1)))
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
-    }
-
-    #[tokio::test]
-    async fn ingest_rejects_unknown_token() {
-        let app = build_app(AppState::for_tests().await).await;
-        let resp = app
-            .oneshot(
-                Request::builder()
-                    .method("POST")
-                    .uri("/v1/telemetry")
-                    .header("content-type", "application/json")
-                    .header("authorization", "Bearer wrong-token")
-                    .body(Body::from(batch_body(1)))
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+        for token in [None, Some("wrong-token")] {
+            let (status, _) =
+                call(&app, "POST", "/v1/telemetry", token, Some(&batch_body(1))).await;
+            assert_eq!(status, StatusCode::UNAUTHORIZED, "{token:?}");
+        }
     }
 
     #[tokio::test]
     async fn ingest_rejects_empty_batch() {
         let app = build_app(AppState::for_tests().await).await;
-        let resp = app
-            .clone()
-            .oneshot(
-                Request::builder()
-                    .method("POST")
-                    .uri("/v1/telemetry")
-                    .header("content-type", "application/json")
-                    .header("authorization", "Bearer test-token")
-                    .body(Body::from(r#"{"batch":[]}"#))
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+        let (status, _) = post(&app, "/v1/telemetry", r#"{"batch":[]}"#).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
     }
 
     #[tokio::test]
@@ -325,19 +239,7 @@ mod tests {
         })
         .to_string();
         assert!(big.len() > 4096, "test body must exceed the test cap");
-        let resp = app
-            .clone()
-            .oneshot(
-                Request::builder()
-                    .method("POST")
-                    .uri("/v1/telemetry")
-                    .header("content-type", "application/json")
-                    .header("authorization", "Bearer test-token")
-                    .body(Body::from(big))
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+        let (status, _) = post(&app, "/v1/telemetry", &big).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
     }
 }

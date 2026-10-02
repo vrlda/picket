@@ -257,9 +257,8 @@ pub async fn fetch_events_simple(
 mod tests {
     use super::*;
     use crate::app::build_app;
-    use axum::body::Body;
-    use axum::http::{Request, StatusCode};
-    use tower::ServiceExt;
+    use crate::test_util::{call, get_ok};
+    use axum::http::StatusCode;
     use wt_common::{AgentEvent, EventKind, Severity};
 
     async fn seed(state: &AppState, id: &str, ts: i64, kind: EventKind, sev: Severity) {
@@ -283,8 +282,7 @@ mod tests {
             .unwrap();
     }
 
-    #[tokio::test]
-    async fn events_list_orders_by_ts_desc_and_returns_evidence() {
+    async fn seeded_app() -> axum::Router {
         let state = AppState::for_tests().await;
         seed(
             &state,
@@ -296,110 +294,74 @@ mod tests {
         .await;
         seed(&state, "e-2", 2000, EventKind::CpuSpike, Severity::Warning).await;
         seed(&state, "e-3", 1500, EventKind::MemHigh, Severity::Warning).await;
-        let app = build_app(state).await;
-        let resp = app
-            .clone()
-            .oneshot(
-                Request::builder()
-                    .uri("/v1/events")
-                    .header("authorization", "Bearer test-token")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(resp.status(), StatusCode::OK);
-        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
-            .await
-            .unwrap();
-        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
-        let events = json["events"].as_array().unwrap();
-        assert_eq!(events.len(), 3);
-        assert_eq!(events[0]["id"], "e-2"); // newest first
-        assert_eq!(events[1]["id"], "e-3");
-        assert_eq!(events[2]["id"], "e-1");
-        assert_eq!(events[0]["evidence"][0]["source"], "test");
+        build_app(state).await
+    }
+
+    fn ids(json: &serde_json::Value) -> Vec<&str> {
+        json["events"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|e| e["id"].as_str().unwrap())
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn events_list_orders_by_ts_desc_and_returns_evidence() {
+        let json = get_ok(&seeded_app().await, "/v1/events").await;
+        assert_eq!(ids(&json), ["e-2", "e-3", "e-1"], "newest first");
+        assert_eq!(json["events"][0]["evidence"][0]["source"], "test");
     }
 
     #[tokio::test]
     async fn events_filters_by_kind_and_limit() {
-        let state = AppState::for_tests().await;
-        seed(
-            &state,
-            "e-1",
-            1000,
-            EventKind::ServiceFailed,
-            Severity::Critical,
-        )
-        .await;
-        seed(&state, "e-2", 2000, EventKind::CpuSpike, Severity::Warning).await;
-        let app = build_app(state).await;
-        let resp = app
-            .clone()
-            .oneshot(
-                Request::builder()
-                    .uri("/v1/events?kind=CpuSpike&limit=10")
-                    .header("authorization", "Bearer test-token")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
-            .await
-            .unwrap();
-        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
-        let events = json["events"].as_array().unwrap();
-        assert_eq!(events.len(), 1);
-        assert_eq!(events[0]["id"], "e-2");
+        let app = seeded_app().await;
+        assert_eq!(
+            ids(&get_ok(&app, "/v1/events?kind=CpuSpike&limit=10").await),
+            ["e-2"]
+        );
+        assert_eq!(ids(&get_ok(&app, "/v1/events?limit=1").await), ["e-2"]);
     }
 
     #[tokio::test]
     async fn events_respect_since_and_host_filter() {
-        let state = AppState::for_tests().await;
-        seed(
-            &state,
-            "e-1",
-            1000,
-            EventKind::ServiceFailed,
-            Severity::Critical,
-        )
-        .await;
-        seed(&state, "e-2", 2000, EventKind::CpuSpike, Severity::Warning).await;
-        let app = build_app(state).await;
-        let resp = app
-            .clone()
-            .oneshot(
-                Request::builder()
-                    .uri("/v1/events?host=h-1&since=1500")
-                    .header("authorization", "Bearer test-token")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
-            .await
-            .unwrap();
-        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
-        let events = json["events"].as_array().unwrap();
-        assert_eq!(events.len(), 1);
-        assert_eq!(events[0]["id"], "e-2");
+        let app = seeded_app().await;
+        assert_eq!(
+            ids(&get_ok(&app, "/v1/events?host=h-1&since=1600").await),
+            ["e-2"]
+        );
+        assert_eq!(ids(&get_ok(&app, "/v1/events?until=1200").await), ["e-1"]);
+        assert!(ids(&get_ok(&app, "/v1/events?host=other").await).is_empty());
     }
 
     #[tokio::test]
-    async fn events_requires_auth() {
-        let app = build_app(AppState::for_tests().await).await;
-        let resp = app
-            .clone()
-            .oneshot(
-                Request::builder()
-                    .uri("/v1/events")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+    async fn events_requires_auth_and_valid_filters() {
+        let app = seeded_app().await;
+        assert_eq!(
+            call(&app, "GET", "/v1/events", None, None).await.0,
+            StatusCode::UNAUTHORIZED
+        );
+        let bad = call(
+            &app,
+            "GET",
+            "/v1/events?since=soon",
+            Some("test-token"),
+            None,
+        )
+        .await;
+        assert_eq!(bad.0, StatusCode::BAD_REQUEST);
+        let bad = call(
+            &app,
+            "GET",
+            "/v1/events?attr.a'b=1",
+            Some("test-token"),
+            None,
+        )
+        .await;
+        assert_eq!(
+            bad.0,
+            StatusCode::BAD_REQUEST,
+            "attribute names are validated"
+        );
     }
 }

@@ -245,9 +245,8 @@ pub fn incident_json(inc: &incidents::Incident) -> serde_json::Value {
 mod tests {
     use super::*;
     use crate::app::build_app;
-    use axum::body::Body;
-    use axum::http::{Request, StatusCode};
-    use tower::ServiceExt;
+    use crate::test_util::{call, get_ok as get_json};
+    use axum::http::StatusCode;
     use wt_common::{AgentEvent, EventKind, Severity};
 
     async fn seed_incident(state: &AppState) -> String {
@@ -286,25 +285,6 @@ mod tests {
         incs[0].id.clone()
     }
 
-    async fn get_json(app: &axum::Router, uri: &str) -> serde_json::Value {
-        let resp = app
-            .clone()
-            .oneshot(
-                Request::builder()
-                    .uri(uri)
-                    .header("authorization", "Bearer test-token")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(resp.status(), StatusCode::OK);
-        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
-            .await
-            .unwrap();
-        serde_json::from_slice(&body).unwrap()
-    }
-
     #[tokio::test]
     async fn lists_incidents_with_status_filter() {
         let state = AppState::for_tests().await;
@@ -333,40 +313,28 @@ mod tests {
         assert!(!json["affected"].as_array().unwrap().is_empty());
     }
 
+    async fn post_status(app: &axum::Router, path: &str) -> StatusCode {
+        crate::test_util::call(app, "POST", path, Some("test-token"), None)
+            .await
+            .0
+    }
+
     #[tokio::test]
     async fn ack_and_resolve_update_status() {
         let state = AppState::for_tests().await;
         let id = seed_incident(&state).await;
         let app = build_app(state).await;
-        let resp = app
-            .clone()
-            .oneshot(
-                Request::builder()
-                    .method("POST")
-                    .uri(format!("/v1/incidents/{}/ack", id))
-                    .header("authorization", "Bearer test-token")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(resp.status(), StatusCode::OK);
-        let json = get_json(&app, &format!("/v1/incidents/{}", id)).await;
+        assert_eq!(
+            post_status(&app, &format!("/v1/incidents/{id}/ack")).await,
+            StatusCode::OK
+        );
+        let json = get_json(&app, &format!("/v1/incidents/{id}")).await;
         assert_eq!(json["status"], "acknowledged");
-        let resp = app
-            .clone()
-            .oneshot(
-                Request::builder()
-                    .method("POST")
-                    .uri(format!("/v1/incidents/{}/resolve", id))
-                    .header("authorization", "Bearer test-token")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(resp.status(), StatusCode::OK);
-        let json = get_json(&app, &format!("/v1/incidents/{}", id)).await;
+        assert_eq!(
+            post_status(&app, &format!("/v1/incidents/{id}/resolve")).await,
+            StatusCode::OK
+        );
+        let json = get_json(&app, &format!("/v1/incidents/{id}")).await;
         assert_eq!(json["status"], "resolved");
         assert!(json["resolved_at"].is_number());
     }
@@ -376,45 +344,27 @@ mod tests {
         let state = AppState::for_tests().await;
         let id = seed_incident(&state).await;
         let app = build_app(state).await;
-        let post = |path: String| {
-            let app = app.clone();
-            async move {
-                app.oneshot(
-                    Request::builder()
-                        .method("POST")
-                        .uri(path)
-                        .header("authorization", "Bearer test-token")
-                        .body(Body::empty())
-                        .unwrap(),
-                )
-                .await
-                .unwrap()
-                .status()
-            }
-        };
-        assert_eq!(
-            post(format!("/v1/incidents/{}/resolve", id)).await,
-            StatusCode::OK
+        let (ack, resolve) = (
+            format!("/v1/incidents/{id}/ack"),
+            format!("/v1/incidents/{id}/resolve"),
         );
+        assert_eq!(post_status(&app, &resolve).await, StatusCode::OK);
         let resolved_at =
-            get_json(&app, &format!("/v1/incidents/{}", id)).await["resolved_at"].clone();
+            get_json(&app, &format!("/v1/incidents/{id}")).await["resolved_at"].clone();
         assert_eq!(
-            post(format!("/v1/incidents/{}/ack", id)).await,
+            post_status(&app, &ack).await,
             StatusCode::CONFLICT,
             "ack must not re-open a resolved incident"
         );
-        assert_eq!(
-            post(format!("/v1/incidents/{}/resolve", id)).await,
-            StatusCode::CONFLICT
-        );
-        let json = get_json(&app, &format!("/v1/incidents/{}", id)).await;
+        assert_eq!(post_status(&app, &resolve).await, StatusCode::CONFLICT);
+        let json = get_json(&app, &format!("/v1/incidents/{id}")).await;
         assert_eq!(json["status"], "resolved");
         assert_eq!(
             json["resolved_at"], resolved_at,
             "cooldown anchor unchanged"
         );
         assert_eq!(
-            post("/v1/incidents/nope/ack".into()).await,
+            post_status(&app, "/v1/incidents/nope/ack").await,
             StatusCode::NOT_FOUND
         );
     }
@@ -422,16 +372,9 @@ mod tests {
     #[tokio::test]
     async fn lifecycle_requires_auth() {
         let app = build_app(AppState::for_tests().await).await;
-        let resp = app
-            .clone()
-            .oneshot(
-                Request::builder()
-                    .uri("/v1/incidents")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+        assert_eq!(
+            call(&app, "GET", "/v1/incidents", None, None).await.0,
+            StatusCode::UNAUTHORIZED
+        );
     }
 }

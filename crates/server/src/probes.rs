@@ -179,37 +179,14 @@ async fn probe_loop(state: AppState, probe: ProbeConfig) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::io::{Read, Write};
     use std::net::TcpListener;
 
-    fn mock_server(status_line: &'static str) -> (String, std::thread::JoinHandle<()>) {
-        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-        let addr = listener.local_addr().unwrap();
-        let handle = std::thread::spawn(move || {
-            if let Ok((mut stream, _)) = listener.accept() {
-                let mut buf = [0u8; 4096];
-                let _ = stream.read(&mut buf);
-                let resp = format!("{status_line}\r\nContent-Length: 0\r\n\r\n");
-                let _ = stream.write_all(resp.as_bytes());
-                let _ = stream.shutdown(std::net::Shutdown::Write);
-                std::thread::sleep(std::time::Duration::from_millis(20));
-            }
-        });
-        (format!("http://{}", addr), handle)
-    }
-
     #[test]
-    fn probe_once_true_on_2xx() {
-        let (url, handle) = mock_server("HTTP/1.1 200 OK");
-        assert!(probe_once(&url, 5));
-        handle.join().unwrap();
-    }
-
-    #[test]
-    fn probe_once_false_on_5xx() {
-        let (url, handle) = mock_server("HTTP/1.1 503 Service Unavailable");
-        assert!(!probe_once(&url, 5));
-        handle.join().unwrap();
+    fn probe_once_true_on_2xx_false_on_5xx() {
+        let (ok, _) = crate::test_util::mock_http(200, "", 1);
+        assert!(probe_once(&ok, 5));
+        let (down, _) = crate::test_util::mock_http(503, "", 1);
+        assert!(!probe_once(&down, 5));
     }
 
     #[test]
