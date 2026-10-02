@@ -451,6 +451,48 @@ pub fn merged_rules(cfg_rules: &[Rule]) -> Vec<Rule> {
 
 use crate::incidents::{self, Incident};
 
+/// Open the draft's incident — or absorb into the open incident with the
+/// same key — and link its events. Returns the incident when it gained
+/// events. `raise_to` lifts the severity (raise-only in SQL).
+async fn upsert(
+    pool: &sqlx::AnyPool,
+    draft: &IncidentDraft,
+    rule_id: &str,
+    raise_to: Option<String>,
+) -> Result<Option<Incident>, sqlx::Error> {
+    let inc = incidents::create_incident(
+        pool,
+        &draft.key,
+        &draft.host_id,
+        &draft.severity,
+        &draft.headline,
+        &draft.cause,
+        &draft.actions,
+        &draft.affected,
+    )
+    .await?;
+    incidents::set_rule_id(pool, &inc.id, rule_id).await?;
+    if incidents::link_events(pool, &inc.id, &draft.events).await? == 0 {
+        return Ok(None);
+    }
+    incidents::touch_incident(pool, &inc.id).await?;
+    if let Some(sev) = raise_to {
+        incidents::raise_severity(pool, &inc.id, &sev).await?;
+    }
+    incidents::fetch_incident(pool, &inc.id).await
+}
+
+/// Worst event severity when it exceeds Warning (absorbing a Critical
+/// event, e.g. a first-seen root login, raises a Warning incident).
+fn raise_if_critical(events: &[AgentEvent]) -> Option<String> {
+    events
+        .iter()
+        .map(|e| e.severity)
+        .max()
+        .filter(|w| *w > Severity::Warning)
+        .map(crate::ingest::severity_wire)
+}
+
 /// Scan recent events, run rules + fallback, absorb or create incidents.
 /// Returns incidents that CHANGED (new or gained new events) — the notifier
 /// trigger. Cooldown applies to BOTH the rule pass and the fallback pass.
@@ -462,21 +504,27 @@ pub async fn scan_and_absorb(
     let max_window = rules.iter().map(|r| r.window_secs).max().unwrap_or(300) * 1000;
     let since = now - max_window;
     let events = crate::events::fetch_events_simple(pool, since).await?;
-    let all_events = events.clone();
     let mut by_host: std::collections::HashMap<String, Vec<AgentEvent>> = Default::default();
-    for e in events {
-        by_host.entry(e.host_id.clone()).or_default().push(e);
+    for e in &events {
+        by_host
+            .entry(e.host_id.clone())
+            .or_default()
+            .push(e.clone());
     }
-    let mut changed = Vec::new();
-    let mut seen: std::collections::HashSet<String> = Default::default();
-    // shared across hosts: the multi-host pass claims events FIRST so the
-    // per-host rule pass can't double-fire on the same unreachables
+    let mut changed: Vec<Incident> = Vec::new();
+    let add = |changed: &mut Vec<Incident>, inc: Option<Incident>| {
+        if let Some(inc) = inc.filter(|i| !changed.iter().any(|c| c.id == i.id)) {
+            changed.push(inc);
+        }
+    };
     // Events that belong to an already-RESOLVED incident are settled: they
     // must never match again (one event, one incident). Without this, a
     // resolved incident whose events are still inside the scan range
     // re-opens as soon as its cooldown lapses — immediately for
     // app_exception (cooldown 0) — and re-notifies about old news.
     let resolved = resolved_event_ids(pool, since).await?;
+    // claimed events: earlier passes claim first (multi-host before
+    // per-host, earlier rules before later ones, rules before fallback)
     let mut matched_event_ids = resolved.clone();
     let fallback_cooldown = rules
         .iter()
@@ -490,30 +538,12 @@ pub async fn scan_and_absorb(
         let draft = assemble_multi_host(mh_events, host_count);
         // claim first: cooldown-suppressed events must not re-open as
         // per-host or fallback incidents (same convention as the rule pass)
-        for e in &draft.events {
-            matched_event_ids.insert(e.id.clone());
-        }
+        matched_event_ids.extend(draft.events.iter().map(|e| e.id.clone()));
         if !recently_resolved(pool, &draft.key, now, 600_000).await? {
-            let inc = incidents::create_incident(
-                pool,
-                &draft.key,
-                &draft.host_id,
-                &draft.severity,
-                &draft.headline,
-                &draft.cause,
-                &draft.actions,
-                &draft.affected,
-            )
-            .await?;
-            incidents::set_rule_id(pool, &inc.id, "multi_host_outage").await?;
-            let new_links = incidents::link_events(pool, &inc.id, &draft.events).await?;
-            if new_links > 0 {
-                incidents::touch_incident(pool, &inc.id).await?;
-                let inc = incidents::fetch_incident(pool, &inc.id).await?.unwrap();
-                if seen.insert(inc.id.clone()) {
-                    changed.push(inc);
-                }
-            }
+            add(
+                &mut changed,
+                upsert(pool, &draft, "multi_host_outage", None).await?,
+            );
         }
     }
 
@@ -522,28 +552,16 @@ pub async fn scan_and_absorb(
     // may count the same event — but claim what they match so the fallback
     // pass leaves it alone.
     for rule in rules.iter().filter(|r| !r.is_fallback && r.is_threshold()) {
-        for inc in threshold_rule(
-            pool,
-            rule,
-            &all_events,
-            now,
-            &resolved,
-            &mut matched_event_ids,
-        )
-        .await?
+        for inc in
+            threshold_rule(pool, rule, &events, now, &resolved, &mut matched_event_ids).await?
         {
-            if seen.insert(inc.id.clone()) {
-                changed.push(inc);
-            }
+            add(&mut changed, Some(inc));
         }
     }
 
     for (host, host_events) in by_host {
         // rule pass (declared order; earlier rules claim events first)
-        for rule in rules {
-            if rule.is_fallback || rule.is_threshold() {
-                continue;
-            }
+        for rule in rules.iter().filter(|r| !r.is_fallback && !r.is_threshold()) {
             // while-let: app_exception matches ONCE PER FINGERPRINT (the
             // events are claimed between iterations); every other rule
             // matches at most once per host, so this is a no-op for them.
@@ -551,101 +569,27 @@ pub async fn scan_and_absorb(
                 let draft = assemble(rule, &m, &host);
                 // claim first: cooldown-suppressed events must NOT re-open as
                 // fallback incidents (they belong to the suppressed key)
-                for e in &m.events {
-                    matched_event_ids.insert(e.id.clone());
-                }
+                matched_event_ids.extend(m.events.iter().map(|e| e.id.clone()));
                 // cooldown: a resolved incident with this key blocks re-open
                 if recently_resolved(pool, &draft.key, now, rule.cooldown_secs * 1000).await? {
                     continue;
                 }
-                let inc = incidents::create_incident(
-                    pool,
-                    &draft.key,
-                    &draft.host_id,
-                    &draft.severity,
-                    &draft.headline,
-                    &draft.cause,
-                    &draft.actions,
-                    &draft.affected,
-                )
-                .await?;
-                incidents::set_rule_id(pool, &inc.id, &rule.id).await?;
-                let new_links = incidents::link_events(pool, &inc.id, &draft.events).await?;
-                if new_links > 0 {
-                    incidents::touch_incident(pool, &inc.id).await?;
-                    // severity may have risen (e.g. first-seen root login
-                    // absorbs a Critical event into a Warning incident)
-                    let worst = draft
-                        .events
-                        .iter()
-                        .map(|e| e.severity)
-                        .max()
-                        .unwrap_or(wt_common::Severity::Warning);
-                    if worst > wt_common::Severity::Warning {
-                        incidents::raise_severity(
-                            pool,
-                            &inc.id,
-                            &crate::ingest::severity_wire(worst),
-                        )
-                        .await?;
-                    }
-                    let inc = incidents::fetch_incident(pool, &inc.id).await?.unwrap();
-                    if seen.insert(inc.id.clone()) {
-                        changed.push(inc);
-                    }
-                }
+                let raise = raise_if_critical(&draft.events);
+                add(&mut changed, upsert(pool, &draft, &rule.id, raise).await?);
             }
         }
         // fallback pass: Warning+ events NOT matched by any rule
         let unmatched: Vec<AgentEvent> = host_events
-            .iter()
+            .into_iter()
             .filter(|e| !matched_event_ids.contains(&e.id))
-            .cloned()
             .collect();
         for draft in fallback_incidents(&unmatched, now, &host) {
-            if let Some(open) = incidents::find_open_by_key(pool, &draft.key).await? {
-                let new_links = incidents::link_events(pool, &open.id, &draft.events).await?;
-                if new_links > 0 {
-                    incidents::touch_incident(pool, &open.id).await?;
-                    // severity may have risen — the SQL guard in
-                    // raise_severity keeps it raise-only
-                    let worst = draft
-                        .events
-                        .iter()
-                        .map(|e| e.severity)
-                        .max()
-                        .unwrap_or(wt_common::Severity::Warning);
-                    if worst > wt_common::Severity::Warning {
-                        incidents::raise_severity(
-                            pool,
-                            &open.id,
-                            &crate::ingest::severity_wire(worst),
-                        )
-                        .await?;
-                    }
-                    let inc = incidents::fetch_incident(pool, &open.id).await?.unwrap();
-                    if seen.insert(inc.id.clone()) {
-                        changed.push(inc);
-                    }
-                }
-            } else if !recently_resolved(pool, &draft.key, now, fallback_cooldown).await? {
-                let inc = incidents::create_incident(
-                    pool,
-                    &draft.key,
-                    &draft.host_id,
-                    &draft.severity,
-                    &draft.headline,
-                    &draft.cause,
-                    &draft.actions,
-                    &draft.affected,
-                )
-                .await?;
-                incidents::set_rule_id(pool, &inc.id, "fallback").await?;
-                incidents::link_events(pool, &inc.id, &draft.events).await?;
-                let inc = incidents::fetch_incident(pool, &inc.id).await?.unwrap();
-                if seen.insert(inc.id.clone()) {
-                    changed.push(inc);
-                }
+            let open = incidents::find_open_by_key(pool, &draft.key)
+                .await?
+                .is_some();
+            if open || !recently_resolved(pool, &draft.key, now, fallback_cooldown).await? {
+                let raise = raise_if_critical(&draft.events);
+                add(&mut changed, upsert(pool, &draft, "fallback", raise).await?);
             }
         }
     }
@@ -665,20 +609,18 @@ async fn threshold_rule(
     matched: &mut std::collections::HashSet<String>,
 ) -> Result<Vec<Incident>, sqlx::Error> {
     let window_start = now - rule.window_secs * 1000;
-    let mut groups: std::collections::BTreeMap<String, Vec<&AgentEvent>> = Default::default();
+    let mut groups: std::collections::BTreeMap<String, Vec<AgentEvent>> = Default::default();
     for e in events {
-        if e.kind != rule.trigger
-            || e.ts < window_start
-            || e.ts > now
-            || resolved.contains(&e.id)
-            || !rule.conditions.iter().all(|c| c.matches(e))
+        if e.kind == rule.trigger
+            && (window_start..=now).contains(&e.ts)
+            && !resolved.contains(&e.id)
+            && rule.conditions.iter().all(|c| c.matches(e))
         {
-            continue;
+            groups
+                .entry(crate::rules::group_key(e, &rule.group_by))
+                .or_default()
+                .push(e.clone());
         }
-        groups
-            .entry(crate::rules::group_key(e, &rule.group_by))
-            .or_default()
-            .push(e);
     }
     let mut changed = Vec::new();
     for (group, evs) in groups {
@@ -687,14 +629,12 @@ async fn threshold_rule(
         } else {
             format!("rule:{}:{}", rule.id, group)
         };
-        let open = incidents::find_open_by_key(pool, &key).await?;
-        if evs.len() < rule.count.max(1) as usize && open.is_none() {
+        let open = incidents::find_open_by_key(pool, &key).await?.is_some();
+        if evs.len() < rule.count.max(1) as usize && !open {
             continue; // below threshold, nothing to absorb into
         }
-        for e in &evs {
-            matched.insert(e.id.clone());
-        }
-        if open.is_none() && recently_resolved(pool, &key, now, rule.cooldown_secs * 1000).await? {
+        matched.extend(evs.iter().map(|e| e.id.clone()));
+        if !open && recently_resolved(pool, &key, now, rule.cooldown_secs * 1000).await? {
             continue;
         }
         let latest = evs.last().expect("non-empty group");
@@ -718,31 +658,21 @@ async fn threshold_rule(
             affected = group.split(',').map(String::from).collect();
         }
         let host = &evs[0].host_id;
-        let host_id = if evs.iter().all(|e| &e.host_id == host) {
-            host.clone()
-        } else {
-            String::new()
+        let draft = IncidentDraft {
+            key,
+            host_id: if evs.iter().all(|e| &e.host_id == host) {
+                host.clone()
+            } else {
+                String::new()
+            },
+            severity: severity.clone(),
+            headline: fill(&rule.headline),
+            cause: fill(&rule.cause),
+            actions: rule.actions.clone(),
+            affected,
+            events: evs,
         };
-        let inc = incidents::create_incident(
-            pool,
-            &key,
-            &host_id,
-            &severity,
-            &fill(&rule.headline),
-            &fill(&rule.cause),
-            &rule.actions,
-            &affected,
-        )
-        .await?;
-        incidents::set_rule_id(pool, &inc.id, &rule.id).await?;
-        let owned: Vec<AgentEvent> = evs.iter().map(|e| (*e).clone()).collect();
-        if incidents::link_events(pool, &inc.id, &owned).await? > 0 {
-            incidents::touch_incident(pool, &inc.id).await?;
-            incidents::raise_severity(pool, &inc.id, &severity).await?;
-            if let Some(inc) = incidents::fetch_incident(pool, &inc.id).await? {
-                changed.push(inc);
-            }
-        }
+        changed.extend(upsert(pool, &draft, &rule.id, Some(severity)).await?);
     }
     Ok(changed)
 }
@@ -891,7 +821,6 @@ async fn scan_loop(state: crate::app::AppState) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::io::{Read, Write};
     use wt_common::{AgentEvent, EventKind, Severity};
 
     fn ev(id: &str, ts: i64, kind: EventKind, sev: Severity, key: &str) -> AgentEvent {
@@ -1454,27 +1383,8 @@ actions = ["Review the change to the affected file", "Roll back the latest confi
 
     #[tokio::test]
     async fn notifier_fires_for_changed_incidents() {
-        // capture delivery: point the webhook at a local listener
-        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-        let addr = listener.local_addr().unwrap();
-        let handle = std::thread::spawn(move || {
-            let (mut stream, _) = listener.accept().unwrap();
-            stream
-                .set_read_timeout(Some(std::time::Duration::from_millis(200)))
-                .unwrap();
-            let mut buf = [0u8; 65536];
-            loop {
-                match stream.read(&mut buf) {
-                    Ok(0) | Err(_) => break,
-                    Ok(_) => continue,
-                }
-            }
-            let req = String::from_utf8_lossy(&buf).into_owned();
-            stream
-                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok")
-                .unwrap();
-            req
-        });
+        // capture delivery: a local webhook
+        let (url, log) = crate::test_util::mock_http(200, "ok", 1);
         let pool = pool().await;
         let events = vec![
             ev(
@@ -1495,15 +1405,12 @@ actions = ["Review the change to the affected file", "Roll back the latest confi
         crate::ingest::store_events(&pool, &events).await.unwrap();
         let cfg = crate::config::ServerConfig {
             notify: crate::notify::NotifyConfig {
-                webhook_url: format!("http://{}", addr),
-                slack_url: String::new(),
-                telegram_token: None,
-                telegram_chat_id: None,
-                telegram_password: None,
+                webhook_url: url.clone(),
                 routing: std::collections::HashMap::from([
                     ("Critical".into(), vec!["webhook".into()]),
                     ("Warning".into(), vec!["webhook".into()]),
                 ]),
+                ..Default::default()
             },
             ..Default::default()
         };
@@ -1519,7 +1426,7 @@ actions = ["Review the change to the affected file", "Roll back the latest confi
         let json = crate::api_incidents::incident_json(&inc);
         let failed = crate::notify::notify_incident(&cfg.notify, &json).await;
         assert!(failed.is_empty(), "delivery succeeded");
-        let req = handle.join().unwrap();
+        let req = log.lock().unwrap()[0].clone();
         assert!(req.contains("watchtower.incident"));
         assert!(req.contains("myapp.service became unhealthy"));
     }

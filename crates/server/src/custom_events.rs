@@ -218,51 +218,13 @@ pub async fn ingest_event(State(state): State<AppState>, request: Request) -> Re
 mod tests {
     use super::*;
     use crate::app::build_app;
-    use axum::body::Body;
-    use tower::ServiceExt;
 
     async fn post(app: &axum::Router, token: &str, body: Value) -> (StatusCode, Value) {
-        let resp = app
-            .clone()
-            .oneshot(
-                axum::http::Request::builder()
-                    .method("POST")
-                    .uri("/v1/events")
-                    .header("authorization", format!("Bearer {token}"))
-                    .header("content-type", "application/json")
-                    .body(Body::from(body.to_string()))
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        let status = resp.status();
-        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
-            .await
-            .unwrap();
-        (
-            status,
-            serde_json::from_slice(&bytes).unwrap_or(Value::Null),
-        )
+        let body = body.to_string();
+        crate::test_util::call(app, "POST", "/v1/events", Some(token), Some(&body)).await
     }
 
-    async fn get(app: &axum::Router, uri: &str) -> Value {
-        let resp = app
-            .clone()
-            .oneshot(
-                axum::http::Request::builder()
-                    .uri(uri)
-                    .header("authorization", "Bearer test-token")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(resp.status(), StatusCode::OK, "{uri}");
-        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
-            .await
-            .unwrap();
-        serde_json::from_slice(&bytes).unwrap()
-    }
+    use crate::test_util::get_ok as get;
 
     fn sample() -> Value {
         json!({
@@ -408,18 +370,9 @@ mod tests {
         assert_eq!(list["events"][0]["source"], "payment-api");
         assert_eq!(list["events"][0]["environment"], "production");
         // a source token cannot read
-        let resp = app
-            .clone()
-            .oneshot(
-                axum::http::Request::builder()
-                    .uri("/v1/events")
-                    .header("authorization", "Bearer src-token")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+        let (status, _) =
+            crate::test_util::call(&app, "GET", "/v1/events", Some("src-token"), None).await;
+        assert_eq!(status, StatusCode::FORBIDDEN);
     }
 
     #[tokio::test]

@@ -206,9 +206,6 @@ pub async fn handle_errors(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use axum::body::Body;
-    use axum::http::Request;
-    use tower::ServiceExt;
     use wt_common::Severity;
 
     use crate::app::{build_app, AppState};
@@ -287,19 +284,7 @@ mod tests {
         let app = build_app(AppState::for_tests().await).await;
         let big = "x".repeat(2 * 1024 * 1024);
         assert!(big.len() > MAX_ERROR_BODY, "body must exceed the cap");
-        let resp = app
-            .clone()
-            .oneshot(
-                Request::builder()
-                    .method("POST")
-                    .uri("/v1/errors")
-                    .header("content-type", "application/json")
-                    .header("authorization", "Bearer test-token")
-                    .body(Body::from(big))
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(resp.status(), StatusCode::PAYLOAD_TOO_LARGE);
+        let (status, _) = crate::test_util::post(&app, "/v1/errors", &big).await;
+        assert_eq!(status, StatusCode::PAYLOAD_TOO_LARGE);
     }
 }
