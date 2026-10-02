@@ -369,11 +369,10 @@ pub fn telegram_send(
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum RegStep {
-    Noop,             // no password configured → first-chat discovery
-    AskPassword,      // reply: please send the password
-    Register(String), // password accepted → register this chat
-    Reject,           // awaiting + wrong password
-    Ignore,           // nothing to do
+    AskPassword, // reply: please send the password
+    Register,    // password accepted → register this chat
+    Reject,      // awaiting + wrong password
+    Ignore,      // nothing to do
 }
 
 /// True for `/start`, `/start@BotName` (group chats) and `/start <payload>`
@@ -385,20 +384,16 @@ pub fn is_start_command(text: &str) -> bool {
 
 /// Pure: one step of the registration state machine.
 /// `awaiting` = the chat sent /start and is waiting for the password.
-pub fn registrar_step(password: Option<&str>, chat: &str, text: &str, awaiting: bool) -> RegStep {
-    let Some(pw) = password else {
-        return RegStep::Noop;
-    };
+pub fn registrar_step(password: &str, text: &str, awaiting: bool) -> RegStep {
     let t = text.trim();
     if is_start_command(t) {
-        return RegStep::AskPassword;
-    }
-    if awaiting && constant_time_eq(t, pw) {
-        RegStep::Register(chat.to_string())
-    } else if awaiting {
-        RegStep::Reject
-    } else {
+        RegStep::AskPassword
+    } else if !awaiting {
         RegStep::Ignore
+    } else if constant_time_eq(t, password) {
+        RegStep::Register
+    } else {
+        RegStep::Reject
     }
 }
 
@@ -471,24 +466,12 @@ static TELEGRAM_MISCONFIG_LOGGED: std::sync::atomic::AtomicBool =
 static TELEGRAM_UNREGISTERED_LOGGED: std::sync::atomic::AtomicBool =
     std::sync::atomic::AtomicBool::new(false);
 
-pub fn telegram_client(
-    token: Option<&str>,
-    pinned_chat: Option<i64>,
-    password: Option<&str>,
-) -> Option<&'static TelegramClient> {
-    let token = token?;
-    Some(TELEGRAM.get_or_init(|| {
-        TelegramClient::with_password(token.to_string(), pinned_chat, password.map(String::from))
-    }))
-}
-
 /// The configured client (None when no bot token is set).
 pub fn configured_telegram(cfg: &NotifyConfig) -> Option<&'static TelegramClient> {
-    telegram_client(
-        cfg.telegram_token.as_deref(),
-        cfg.telegram_chat_id,
-        cfg.telegram_password.as_deref(),
-    )
+    let token = cfg.telegram_token.clone()?;
+    Some(TELEGRAM.get_or_init(|| {
+        TelegramClient::with_password(token, cfg.telegram_chat_id, cfg.telegram_password.clone())
+    }))
 }
 
 /// Persist the chat the client resolved or registered, so a restart keeps
@@ -915,12 +898,12 @@ impl TelegramBot {
             return;
         }
         let is_awaiting = self.awaiting.contains(&chat);
-        let reply = match registrar_step(Some(&password), &chat.to_string(), &text, is_awaiting) {
+        let reply = match registrar_step(&password, &text, is_awaiting) {
             RegStep::AskPassword => {
                 self.awaiting.insert(chat);
                 "Send the password to register this chat."
             }
-            RegStep::Register(_) => {
+            RegStep::Register => {
                 self.awaiting.remove(&chat);
                 self.failures.remove(&chat);
                 if let Some(message_id) = u["message"]["message_id"].as_i64() {
@@ -1281,31 +1264,20 @@ mod tests {
     #[test]
     fn registrar_state_machine_handshake() {
         assert_eq!(
-            registrar_step(None, "chat-1", "/start", false),
-            RegStep::Noop
-        );
-        let pw = Some("hunter2".to_string());
-        assert_eq!(
-            registrar_step(pw.as_deref(), "chat-1", "/start", false),
+            registrar_step("hunter2", "/start", false),
             RegStep::AskPassword
         );
         assert_eq!(
-            registrar_step(pw.as_deref(), "chat-1", "hunter2", true),
-            RegStep::Register("chat-1".into())
+            registrar_step("hunter2", "hunter2", true),
+            RegStep::Register
         );
+        assert_eq!(registrar_step("hunter2", "wrong", true), RegStep::Reject);
         assert_eq!(
-            registrar_step(pw.as_deref(), "chat-1", "wrong", true),
-            RegStep::Reject
-        );
-        assert_eq!(
-            registrar_step(pw.as_deref(), "chat-1", "hunter2", false),
+            registrar_step("hunter2", "hunter2", false),
             RegStep::Ignore,
             "must /start first"
         );
-        assert_eq!(
-            registrar_step(pw.as_deref(), "chat-1", "hello", false),
-            RegStep::Ignore
-        );
+        assert_eq!(registrar_step("hunter2", "hello", false), RegStep::Ignore);
     }
 
     #[test]
@@ -1388,7 +1360,7 @@ mod tests {
         assert!(!is_start_command("/started"));
         assert!(!is_start_command("hunter2"));
         assert_eq!(
-            registrar_step(Some("pw"), "1", "/start@WatchtowerBot", false),
+            registrar_step("pw", "/start@WatchtowerBot", false),
             RegStep::AskPassword
         );
     }

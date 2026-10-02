@@ -128,25 +128,6 @@ impl CrashTracker {
 mod tests {
     use super::*;
 
-    fn fake_runner(out: &'static str) -> FakeRunner {
-        FakeRunner {
-            out: out.to_string(),
-        }
-    }
-
-    struct FakeRunner {
-        out: String,
-    }
-
-    impl CommandRunner for FakeRunner {
-        fn program(&self) -> &'static str {
-            "fake"
-        }
-        fn run(&self, _args: &[&str]) -> Result<String, String> {
-            Ok(self.out.clone())
-        }
-    }
-
     const LIST: &str = "\
 sshd.service        loaded active running sshd
 nginx.service       loaded failed  failed  nginx
@@ -155,7 +136,7 @@ cron.service        loaded active running cron
 
     #[test]
     fn parses_service_states_from_list_units_output() {
-        let states = systemctl_list_units(&fake_runner(LIST)).unwrap();
+        let states = systemctl_list_units(&crate::cmd::FakeCli(LIST.into())).unwrap();
         assert_eq!(states["sshd.service"], ServiceState::Active);
         assert_eq!(states["nginx.service"], ServiceState::Failed);
         assert_eq!(states["cron.service"], ServiceState::Active);

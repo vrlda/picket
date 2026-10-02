@@ -92,12 +92,10 @@ mod tests {
     #[test]
     fn audits_runners_and_spool() {
         let runners = crate::cmd::Runners::with_fakes(
-            Box::new(FakeRunner {
-                out: "running".into(),
-            }),
-            Box::new(FakeRunner { out: "{}".into() }),
-            Box::new(FakeRunner { out: "".into() }),
-            Box::new(FakeRunner { out: "".into() }),
+            Box::new(crate::cmd::FakeCli("running".into())),
+            Box::new(crate::cmd::FakeCli("{}".into())),
+            Box::new(crate::cmd::FakeCli("".into())),
+            Box::new(crate::cmd::FakeCli("".into())),
         );
         let spool = std::env::temp_dir().join(format!("wt-audit-{}", std::process::id()));
         std::fs::create_dir_all(&spool).unwrap();
@@ -116,31 +114,14 @@ mod tests {
     #[test]
     fn audit_reports_failures() {
         let runners = crate::cmd::Runners::with_fakes(
-            Box::new(FakeRunner { out: "".into() }),
-            Box::new(FakeRunner { out: "".into() }),
-            Box::new(FakeRunner { out: "".into() }),
-            Box::new(FakeRunner { out: "".into() }),
+            Box::new(crate::cmd::FakeCli("".into())),
+            Box::new(crate::cmd::FakeCli("".into())),
+            Box::new(crate::cmd::FakeCli("".into())),
+            Box::new(crate::cmd::FakeCli("".into())),
         );
         let spool = std::env::temp_dir().join(format!("wt-audit2-{}", std::process::id()));
         let results = audit(&runners, &spool);
         assert!(results.iter().all(|r| r.detail.contains("failed")));
         std::fs::remove_dir_all(&spool).ok();
-    }
-
-    struct FakeRunner {
-        out: String,
-    }
-
-    impl crate::cmd::CommandRunner for FakeRunner {
-        fn program(&self) -> &'static str {
-            "fake"
-        }
-        fn run(&self, _args: &[&str]) -> Result<String, String> {
-            if self.out.is_empty() {
-                Err("exit 1".into())
-            } else {
-                Ok(self.out.clone())
-            }
-        }
     }
 }

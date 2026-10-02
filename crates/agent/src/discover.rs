@@ -229,26 +229,6 @@ pub fn detect_databases(procfs: &crate::procfs::ProcFs) -> Option<String> {
 }
 
 #[cfg(test)]
-struct FakeRunner {
-    out: String,
-    ok_program: &'static str,
-}
-
-#[cfg(test)]
-impl crate::cmd::CommandRunner for FakeRunner {
-    fn program(&self) -> &'static str {
-        self.ok_program
-    }
-    fn run(&self, _args: &[&str]) -> Result<String, String> {
-        if self.program() != self.ok_program || self.out.is_empty() {
-            Err("exit 1".into())
-        } else {
-            Ok(self.out.clone())
-        }
-    }
-}
-
-#[cfg(test)]
 mod tests {
     use super::*;
     use std::path::PathBuf;
@@ -302,15 +282,9 @@ mod tests {
 
     #[test]
     fn systemd_running_via_runner() {
-        let runner = FakeRunner {
-            out: "running".to_string(),
-            ok_program: "systemctl",
-        };
+        let runner = crate::cmd::FakeCli("running".to_string());
         assert!(detect_systemd(&root(), &runner).is_some());
-        let runner = FakeRunner {
-            out: String::new(),
-            ok_program: "systemctl",
-        };
+        let runner = crate::cmd::FakeCli(String::new());
         assert!(
             detect_systemd(&root(), &runner).is_none(),
             "systemctl failure → not running"
@@ -333,22 +307,10 @@ mod tests {
             PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/proc"),
         );
         let runners = crate::cmd::Runners::with_fakes(
-            Box::new(FakeRunner {
-                out: String::new(),
-                ok_program: "systemctl",
-            }),
-            Box::new(FakeRunner {
-                out: String::new(),
-                ok_program: "systemctl",
-            }),
-            Box::new(FakeRunner {
-                out: "x".into(),
-                ok_program: "docker",
-            }),
-            Box::new(FakeRunner {
-                out: String::new(),
-                ok_program: "openssl",
-            }),
+            Box::new(crate::cmd::FakeCli(String::new())),
+            Box::new(crate::cmd::FakeCli(String::new())),
+            Box::new(crate::cmd::FakeCli("x".into())),
+            Box::new(crate::cmd::FakeCli(String::new())),
         );
         let checks = run_all(&root, &runners, &procfs);
         let docker = checks

@@ -4,24 +4,21 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 pub trait CommandRunner {
-    // never called in non-test code; kept as part of the interface contract
-    #[allow(dead_code)]
-    fn program(&self) -> &'static str;
     fn run(&self, args: &[&str]) -> Result<String, String>;
 }
 
-pub struct SystemCtl;
+/// An external CLI (systemctl, journalctl, docker, openssl), run with a
+/// timeout; a non-zero exit is an error carrying stderr.
+pub struct Cli(pub &'static str);
 
-impl CommandRunner for SystemCtl {
-    fn program(&self) -> &'static str {
-        "systemctl"
-    }
+impl CommandRunner for Cli {
     fn run(&self, args: &[&str]) -> Result<String, String> {
-        let out = run_with_timeout("systemctl", args).map_err(|e| e.to_string())?;
+        let out = run_with_timeout(self.0, args).map_err(|e| e.to_string())?;
         if !out.status.success() {
             let stderr = String::from_utf8_lossy(&out.stderr);
             return Err(format!(
-                "systemctl exited {}: {}",
+                "{} exited {}: {}",
+                self.0,
                 out.status,
                 stderr.trim()
             ));
@@ -30,23 +27,18 @@ impl CommandRunner for SystemCtl {
     }
 }
 
-pub struct JournalCtl;
+/// Test double: returns `.0`, or fails ("exit 1") when it is empty.
+#[cfg(test)]
+pub struct FakeCli(pub String);
 
-impl CommandRunner for JournalCtl {
-    fn program(&self) -> &'static str {
-        "journalctl"
-    }
-    fn run(&self, args: &[&str]) -> Result<String, String> {
-        let out = run_with_timeout("journalctl", args).map_err(|e| e.to_string())?;
-        if !out.status.success() {
-            let stderr = String::from_utf8_lossy(&out.stderr);
-            return Err(format!(
-                "journalctl exited {}: {}",
-                out.status,
-                stderr.trim()
-            ));
+#[cfg(test)]
+impl CommandRunner for FakeCli {
+    fn run(&self, _args: &[&str]) -> Result<String, String> {
+        if self.0.is_empty() {
+            Err("exit 1".into())
+        } else {
+            Ok(self.0.clone())
         }
-        Ok(String::from_utf8_lossy(&out.stdout).into_owned())
     }
 }
 
@@ -62,10 +54,10 @@ pub struct Runners {
 impl Runners {
     pub fn real() -> Self {
         Runners {
-            sys: Box::new(SystemCtl),
-            journal: Box::new(JournalCtl),
-            docker: Box::new(DockerCli),
-            openssl: Box::new(OpensslCli),
+            sys: Box::new(Cli("systemctl")),
+            journal: Box::new(Cli("journalctl")),
+            docker: Box::new(Cli("docker")),
+            openssl: Box::new(Cli("openssl")),
         }
     }
 
@@ -82,38 +74,6 @@ impl Runners {
             docker,
             openssl,
         }
-    }
-}
-
-pub struct DockerCli;
-
-impl CommandRunner for DockerCli {
-    fn program(&self) -> &'static str {
-        "docker"
-    }
-    fn run(&self, args: &[&str]) -> Result<String, String> {
-        let out = run_with_timeout("docker", args).map_err(|e| e.to_string())?;
-        if !out.status.success() {
-            let stderr = String::from_utf8_lossy(&out.stderr);
-            return Err(format!("docker exited {}: {}", out.status, stderr.trim()));
-        }
-        Ok(String::from_utf8_lossy(&out.stdout).into_owned())
-    }
-}
-
-pub struct OpensslCli;
-
-impl CommandRunner for OpensslCli {
-    fn program(&self) -> &'static str {
-        "openssl"
-    }
-    fn run(&self, args: &[&str]) -> Result<String, String> {
-        let out = run_with_timeout("openssl", args).map_err(|e| e.to_string())?;
-        if !out.status.success() {
-            let stderr = String::from_utf8_lossy(&out.stderr);
-            return Err(format!("openssl exited {}: {}", out.status, stderr.trim()));
-        }
-        Ok(String::from_utf8_lossy(&out.stdout).into_owned())
     }
 }
 
