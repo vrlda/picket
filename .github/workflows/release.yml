@@ -14,13 +14,23 @@ jobs:
   build:
     # musl build = fully static binaries that run on any Linux (glibc
     # builds from the 24.04 runner fail on older distros — verified live).
+    # macOS builds are mainly for watchtower-runner on a Mac.
     strategy:
       matrix:
-        target: [x86_64-unknown-linux-musl]
-    runs-on: ubuntu-latest
+        include:
+          - target: x86_64-unknown-linux-musl
+            os: ubuntu-latest
+          - target: aarch64-unknown-linux-musl
+            os: ubuntu-24.04-arm
+          - target: aarch64-apple-darwin
+            os: macos-latest
+          - target: x86_64-apple-darwin
+            os: macos-latest
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
-      - run: sudo apt-get update && sudo apt-get install -y musl-tools
+      - if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y musl-tools
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}
@@ -28,10 +38,7 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: watchtower-${{ matrix.target }}
-          path: |
-            dist/*.tar.gz
-            dist/SHA256SUMS
-      - run: cat dist/SHA256SUMS
+          path: dist/*.tar.gz
 
   publish:
     needs: build
@@ -43,6 +50,8 @@ jobs:
         with:
           path: dist
           merge-multiple: true
+      # one checksum file for every target's tarball
+      - run: cd dist && sha256sum watchtower-*.tar.gz > SHA256SUMS && cat SHA256SUMS
       - uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ inputs.tag || github.ref_name }}

@@ -665,3 +665,65 @@ async fn unclaimed_task_alerts_once() {
         .contains("no configured runner"));
     assert!(notifications.try_recv().is_err(), "alerted once");
 }
+
+#[tokio::test]
+async fn auto_agent_takes_built_in_incidents() {
+    let mut s = state().await;
+    s.cfg
+        .agent_profiles
+        .insert("ops".into(), AgentProfile::default());
+    s.cfg.auto_agent = crate::dispatch::AutoAgent {
+        profile: "ops".into(),
+        ..Default::default()
+    };
+    let host_event = |id: &str, host: &str, sev: wt_common::Severity| wt_common::AgentEvent {
+        id: id.into(),
+        ts: *T0,
+        host_id: host.into(),
+        key: format!("svc:{id}"),
+        kind: wt_common::EventKind::ServiceFailed.into(),
+        severity: sev,
+        summary: "nginx.service failed".into(),
+        ..Default::default()
+    };
+    // below min_severity (Warning): no agent
+    assert_eq!(s.cfg.auto_agent.profile_for("Info"), None);
+    assert_eq!(s.cfg.auto_agent.profile_for("Warning"), Some("ops"));
+    store(&s, &[host_event("i1", "web-2", wt_common::Severity::Info)]).await;
+    scan(&s, *T0 + 1000).await;
+    assert_eq!(task_count(&s).await, 0);
+    // a critical service failure on a host goes to the auto profile
+    store(
+        &s,
+        &[host_event("c1", "web-1", wt_common::Severity::Critical)],
+    )
+    .await;
+    let changed = scan(&s, *T0 + 2000).await;
+    assert_eq!(changed.len(), 1);
+    let (profile, payload): (String, String) =
+        sqlx::query_as("SELECT profile, payload_json FROM agent_tasks")
+            .fetch_one(&s.pool)
+            .await
+            .unwrap();
+    assert_eq!(profile, "ops");
+    let payload: Value = serde_json::from_str(&payload).unwrap();
+    assert_eq!(
+        payload["host_id"], "web-1",
+        "the runner learns which host to reach"
+    );
+    // rules with their own agent dispatch keep it (merchant_failures → payment_api)
+    store(
+        &s,
+        &(0..5)
+            .map(|i| failure(&format!("m{i}"), *T0 + 3000 + i, "mer_z"))
+            .collect::<Vec<_>>(),
+    )
+    .await;
+    scan(&s, *T0 + 4000).await;
+    let (n,): (i64,) =
+        sqlx::query_as("SELECT count(*) FROM agent_tasks WHERE profile = 'payment_api'")
+            .fetch_one(&s.pool)
+            .await
+            .unwrap();
+    assert_eq!(n, 1);
+}

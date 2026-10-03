@@ -1,6 +1,6 @@
 [package]
 name = "watchtower-runner"
-version = "0.4.0"
+version = "0.5.0"
 edition = "2021"
 description = "Runs Watchtower agent tasks on an always-on machine (outbound HTTPS only)"
 

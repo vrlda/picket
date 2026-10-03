@@ -22,7 +22,29 @@ pub struct RunnerConfig {
     pub poll_timeout_secs: u64,
     /// Worktrees and logs live here.
     pub work_dir: PathBuf,
+    /// Production hosts by Watchtower host id: how the agent reaches them
+    /// over SSH. A host without an entry is reached as `ssh <host_id>`
+    /// (an alias in ~/.ssh/config works).
+    pub hosts: HashMap<String, Host>,
     pub profiles: HashMap<String, Profile>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Host {
+    /// ssh destination, e.g. "root@203.0.113.10" or a ~/.ssh/config alias.
+    pub ssh: String,
+}
+
+impl RunnerConfig {
+    /// ssh destination for a Watchtower host id.
+    pub fn ssh_dest<'a>(&'a self, host_id: &'a str) -> &'a str {
+        self.hosts
+            .get(host_id)
+            .map(|h| h.ssh.as_str())
+            .filter(|s| !s.is_empty())
+            .unwrap_or(host_id)
+    }
 }
 
 impl Default for RunnerConfig {
@@ -34,6 +56,7 @@ impl Default for RunnerConfig {
             labels: Vec::new(),
             poll_timeout_secs: 30,
             work_dir: PathBuf::from("watchtower-runner"),
+            hosts: HashMap::new(),
             profiles: HashMap::new(),
         }
     }
@@ -61,6 +84,21 @@ impl Autonomy {
     }
 }
 
+/// What the agent may do on the production hosts (over SSH). Independent
+/// of `autonomy`, which governs the code repository.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Production {
+    /// No host access.
+    None,
+    /// Read-only diagnostics on the hosts.
+    Diagnose,
+    /// Diagnose and fix operational problems on the hosts (restart
+    /// services, free disk, revert a bad config change, ...).
+    #[default]
+    Remediate,
+}
+
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Isolation {
@@ -76,9 +114,13 @@ pub enum Isolation {
 pub struct Profile {
     /// "claude-code" (preset) or "command".
     pub adapter: String,
-    /// Repository the agent works on.
+    /// Repository the agent works on. Empty = no repository: the agent
+    /// works on the hosts over SSH from a scratch directory.
     pub workspace: PathBuf,
+    /// What the agent may do in the repository.
     pub autonomy: Autonomy,
+    /// What the agent may do on the production hosts.
+    pub production: Production,
     pub isolation: Isolation,
     pub timeout_secs: u64,
     /// Extra instructions appended to the built-in prompt.
@@ -107,6 +149,7 @@ impl Default for Profile {
             adapter: "claude-code".into(),
             workspace: PathBuf::new(),
             autonomy: Autonomy::Investigate,
+            production: Production::Remediate,
             isolation: Isolation::Worktree,
             timeout_secs: 1800,
             prompt_file: None,
@@ -153,9 +196,6 @@ impl RunnerConfig {
                 }
                 other => return Err(format!("profile {name}: unknown adapter {other:?}")),
             }
-            if p.workspace.as_os_str().is_empty() {
-                return Err(format!("profile {name}: workspace is required"));
-            }
             for g in p
                 .blocked_paths
                 .iter()
@@ -189,6 +229,10 @@ mod tests {
             adapter = "command"
             command = ["my-agent", "--json"]
             workspace = "/srv/app"
+            [profiles.ops]
+            production = "diagnose"
+            [hosts.web-1]
+            ssh = "root@203.0.113.10"
             "#,
         )
         .unwrap();
@@ -198,6 +242,20 @@ mod tests {
         assert_eq!(p.autonomy, Autonomy::Patch);
         assert_eq!(p.isolation, Isolation::Worktree);
         assert_eq!(p.timeout_secs, 1800);
+        assert_eq!(
+            p.production,
+            Production::Remediate,
+            "host access by default"
+        );
+        let ops = &cfg.profiles["ops"];
+        assert!(ops.workspace.as_os_str().is_empty(), "no repository needed");
+        assert_eq!(ops.production, Production::Diagnose);
+        assert_eq!(cfg.ssh_dest("web-1"), "root@203.0.113.10");
+        assert_eq!(
+            cfg.ssh_dest("db-1"),
+            "db-1",
+            "unknown hosts use ssh aliases"
+        );
     }
 
     #[test]

@@ -17,7 +17,7 @@ use std::time::{Duration, Instant};
 
 use serde_json::{json, Value};
 
-use config::{Autonomy, Isolation, Profile, RunnerConfig};
+use config::{Autonomy, Isolation, Production, Profile, RunnerConfig};
 use prompt::AgentResult;
 
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -199,6 +199,8 @@ pub struct Workspace {
     pub base: Option<String>,
     pub branch: Option<String>,
     pub worktree: bool,
+    /// A per-task scratch directory (profile without a repository).
+    pub scratch: bool,
 }
 
 /// Task id → a safe path/branch component.
@@ -219,6 +221,18 @@ pub fn prepare_workspace(
     profile: &Profile,
     task_id: &str,
 ) -> Result<Workspace, String> {
+    if profile.workspace.as_os_str().is_empty() {
+        let dir = cfg.work_dir.join("tasks").join(sanitize(task_id));
+        std::fs::create_dir_all(&dir).map_err(|e| format!("work_dir: {e}"))?;
+        return Ok(Workspace {
+            repo: dir.clone(),
+            dir,
+            base: None,
+            branch: None,
+            worktree: false,
+            scratch: true,
+        });
+    }
     let repo = profile.workspace.clone();
     if !repo.is_dir() {
         return Err(format!("workspace {} does not exist", repo.display()));
@@ -232,6 +246,7 @@ pub fn prepare_workspace(
             base,
             branch: None,
             worktree: false,
+            scratch: false,
         });
     }
     let base = base.ok_or_else(|| {
@@ -269,6 +284,7 @@ pub fn prepare_workspace(
         base: Some(base),
         branch: Some(branch),
         worktree: true,
+        scratch: false,
     })
 }
 
@@ -385,8 +401,12 @@ pub fn enforce(profile: &Profile, ws: &Workspace, mut result: AgentResult) -> Ag
     result
 }
 
-/// Remove a worktree that holds no changes (kept otherwise, for review).
+/// Remove a scratch directory, and a worktree that holds no changes (kept
+/// otherwise, for review).
 pub fn cleanup(ws: &Workspace, result: &AgentResult) {
+    if ws.scratch {
+        let _ = std::fs::remove_dir_all(&ws.dir);
+    }
     if !ws.worktree {
         return;
     }
@@ -422,8 +442,13 @@ pub fn adapter_argv(profile: &Profile, prompt: &str) -> Vec<String> {
         "--output-format".into(),
         "json".into(),
     ];
+    // host access runs over ssh, so it needs the shell even when the
+    // repository is read-only
     let (mode, default_tools): (&str, &[&str]) = match profile.autonomy {
-        Autonomy::Investigate => ("plan", &["Read", "Grep", "Glob", "WebFetch"]),
+        Autonomy::Investigate if profile.production == Production::None => {
+            ("plan", &["Read", "Grep", "Glob", "WebFetch"])
+        }
+        Autonomy::Investigate => ("default", &["Read", "Grep", "Glob", "WebFetch", "Bash"]),
         _ => (
             "acceptEdits",
             &["Read", "Grep", "Glob", "Edit", "Write", "Bash"],
@@ -533,6 +558,26 @@ pub fn run_process(
 
 // ---------- one task ----------
 
+/// Hosts the agent may reach, as (host id, ssh destination): the incident's
+/// host first, then every host in runner.toml.
+pub fn reachable_hosts(cfg: &RunnerConfig, context: &Value) -> Vec<(String, String)> {
+    let mut out: Vec<(String, String)> = Vec::new();
+    if let Some(h) = context["incident"]["host_id"]
+        .as_str()
+        .filter(|h| !h.is_empty())
+    {
+        out.push((h.to_string(), cfg.ssh_dest(h).to_string()));
+    }
+    let mut names: Vec<&String> = cfg.hosts.keys().collect();
+    names.sort();
+    for h in names {
+        if !out.iter().any(|(x, _)| x == h) {
+            out.push((h.clone(), cfg.ssh_dest(h).to_string()));
+        }
+    }
+    out
+}
+
 fn tail(s: &str, n: usize) -> String {
     let chars: Vec<char> = s.chars().collect();
     chars[chars.len().saturating_sub(n)..].iter().collect()
@@ -623,6 +668,7 @@ fn execute(
         .as_ref()
         .and_then(|p| std::fs::read_to_string(p).ok())
         .unwrap_or_default();
+    let hosts = reachable_hosts(cfg, &context);
     let prompt = prompt::build_prompt(&prompt::PromptInput {
         task_id: id,
         attempt: task["attempt"].as_i64().unwrap_or(1),
@@ -632,6 +678,7 @@ fn execute(
         server_url: &cfg.server_url,
         context: &context,
         branch: ws.branch.as_deref(),
+        hosts: &hosts,
         extra: &extra,
     });
     let logs = cfg.work_dir.join("logs");
@@ -649,7 +696,7 @@ fn execute(
         }
     }
     eprintln!("task {id}: running {agent_name} in {}", ws.dir.display());
-    let env = vec![
+    let mut env = vec![
         ("WATCHTOWER_URL".to_string(), cfg.server_url.clone()),
         ("WATCHTOWER_TASK_ID".to_string(), id.to_string()),
         ("WATCHTOWER_TASK_TOKEN".to_string(), token.to_string()),
@@ -662,6 +709,12 @@ fn execute(
             format!("{:?}", profile.autonomy).to_lowercase(),
         ),
     ];
+    if let Some((_, dest)) = hosts
+        .first()
+        .filter(|_| profile.production != Production::None)
+    {
+        env.push(("WATCHTOWER_SSH".to_string(), dest.clone()));
+    }
     let argv = adapter_argv(profile, &prompt);
     let stdin = (profile.adapter == "command").then_some(prompt.as_str());
     let run = run_process(
@@ -792,8 +845,17 @@ mod tests {
         let argv = adapter_argv(&p, "PROMPT");
         assert_eq!(&argv[..3], &["claude", "-p", "PROMPT"]);
         let joined = argv.join(" ");
+        assert!(
+            joined.contains("--permission-mode default") && joined.contains("Bash"),
+            "host access needs the shell"
+        );
+        p.production = Production::None;
+        let joined = adapter_argv(&p, "PROMPT").join(" ");
         assert!(joined.contains("--permission-mode plan"));
-        assert!(!joined.contains("Bash"), "investigate gets no shell");
+        assert!(
+            !joined.contains("Bash"),
+            "investigate without host access gets no shell"
+        );
         p.autonomy = Autonomy::Patch;
         p.model = "claude-opus-5-5".into();
         let joined = adapter_argv(&p, "x").join(" ");
@@ -847,6 +909,43 @@ mod tests {
         )
         .unwrap();
         assert!(c.cancelled);
+    }
+
+    #[test]
+    fn incident_host_first_then_configured_hosts() {
+        let mut cfg = RunnerConfig::default();
+        for (h, d) in [("web-1", "root@10.0.0.5"), ("db-1", "")] {
+            cfg.hosts.insert(h.into(), config::Host { ssh: d.into() });
+        }
+        let ctx = json!({ "incident": { "host_id": "web-1" } });
+        assert_eq!(
+            reachable_hosts(&cfg, &ctx),
+            vec![
+                ("web-1".to_string(), "root@10.0.0.5".to_string()),
+                ("db-1".to_string(), "db-1".to_string()),
+            ]
+        );
+        let ctx = json!({ "incident": { "host_id": "cache-1" } });
+        assert_eq!(
+            reachable_hosts(&cfg, &ctx)[0],
+            ("cache-1".into(), "cache-1".into())
+        );
+    }
+
+    #[test]
+    fn profile_without_repository_gets_a_scratch_dir() {
+        let tmp = std::env::temp_dir().join(format!("wt-scratch-{}", std::process::id()));
+        let cfg = RunnerConfig {
+            work_dir: tmp.clone(),
+            ..Default::default()
+        };
+        let ws = prepare_workspace(&cfg, &Profile::default(), "agt/1").unwrap();
+        assert!(ws.scratch && ws.dir.is_dir() && ws.dir.starts_with(&tmp));
+        let r = enforce(&Profile::default(), &ws, AgentResult::default());
+        assert_eq!(r.changes["files"], json!([]));
+        cleanup(&ws, &r);
+        assert!(!ws.dir.exists());
+        let _ = std::fs::remove_dir_all(&tmp);
     }
 
     #[test]

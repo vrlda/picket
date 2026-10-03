@@ -308,13 +308,26 @@ pub async fn dispatch_agent(
 /// for the incident notification ("Autonomous response: ...") and whether
 /// it is news (a task was just queued or autonomy just stopped).
 pub async fn dispatch_for_incident(state: &AppState, inc: &Incident) -> Option<(String, bool)> {
-    let rule = state.rules.iter().find(|r| r.id == inc.rule_id)?;
+    let mut profiles: Vec<&str> = state
+        .rules
+        .iter()
+        .find(|r| r.id == inc.rule_id)
+        .map(|r| {
+            r.dispatch
+                .iter()
+                .filter_map(|a| match a {
+                    crate::dispatch::DispatchAction::Agent { profile } => Some(profile.as_str()),
+                    _ => None,
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    if profiles.is_empty() {
+        profiles.extend(state.cfg.auto_agent.profile_for(&inc.severity));
+    }
     let mut notes = Vec::new();
     let mut news = false;
-    for action in &rule.dispatch {
-        let crate::dispatch::DispatchAction::Agent { profile } = action else {
-            continue;
-        };
+    for profile in profiles {
         match dispatch_agent(state, inc, profile).await {
             Ok(DispatchOutcome::Created(_)) => {
                 news = true;
