@@ -39,13 +39,8 @@ fn main() {
         Cmd::Run => watchtower_runner::run_forever(&cfg),
         Cmd::Check => {
             let mut ok = true;
+            let mark = |good: bool| if good { "✓" } else { "✗" };
             for (name, p) in &cfg.profiles {
-                let git = std::process::Command::new("git")
-                    .arg("-C")
-                    .arg(&p.workspace)
-                    .args(["rev-parse", "--is-inside-work-tree"])
-                    .output()
-                    .is_ok_and(|o| o.status.success());
                 let bin = if p.adapter == "command" {
                     p.command[0].clone()
                 } else {
@@ -55,20 +50,60 @@ fn main() {
                     .arg("--version")
                     .output()
                     .is_ok();
+                let (repo_ok, repo) = if p.workspace.as_os_str().is_empty() {
+                    (true, "no repository".to_string())
+                } else {
+                    let git = std::process::Command::new("git")
+                        .arg("-C")
+                        .arg(&p.workspace)
+                        .args(["rev-parse", "--is-inside-work-tree"])
+                        .output()
+                        .is_ok_and(|o| o.status.success());
+                    (
+                        p.workspace.is_dir(),
+                        format!(
+                            "workspace {} ({})",
+                            p.workspace.display(),
+                            if git { "git" } else { "not a git repo" }
+                        ),
+                    )
+                };
                 println!(
-                    "{} profile {name}: workspace {} ({}) · {} {} · autonomy {:?}",
-                    if p.workspace.is_dir() && found {
-                        "✓"
-                    } else {
-                        "✗"
-                    },
-                    p.workspace.display(),
-                    if git { "git" } else { "not a git repo" },
-                    bin,
+                    "{} profile {name}: {repo} · {bin} {} · autonomy {:?} · production {:?}",
+                    mark(repo_ok && found),
                     if found { "found" } else { "NOT FOUND" },
                     p.autonomy,
+                    p.production,
                 );
-                ok &= p.workspace.is_dir() && found;
+                ok &= repo_ok && found;
+            }
+            let mut hosts: Vec<&String> = cfg.hosts.keys().collect();
+            hosts.sort();
+            for h in hosts {
+                let dest = cfg.ssh_dest(h);
+                let reached = std::process::Command::new("ssh")
+                    .args([
+                        "-o",
+                        "BatchMode=yes",
+                        "-o",
+                        "ConnectTimeout=10",
+                        "-o",
+                        "StrictHostKeyChecking=accept-new",
+                        dest,
+                        "true",
+                    ])
+                    .output()
+                    .is_ok_and(|o| o.status.success());
+                println!(
+                    "{} host {h}: ssh {dest} {}",
+                    mark(reached),
+                    if reached {
+                        "ok"
+                    } else {
+                        "FAILED (key-based ssh must work non-interactively)"
+                    }
+                );
+                ok &= reached;
             }
             let client = watchtower_runner::Client::new(&cfg);
             let caps: Vec<String> = cfg.profiles.keys().cloned().collect();

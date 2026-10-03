@@ -106,6 +106,40 @@ pub fn channels_for_moment(
     out
 }
 
+/// `[auto_agent]`: hand every incident whose rule has no agent dispatch of
+/// its own to one profile — autonomous response for the built-in incidents
+/// (service down, disk full, ...) without writing rules.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct AutoAgent {
+    /// Agent profile ("" = off).
+    pub profile: String,
+    /// Lowest severity handed to the agent: "Info", "Warning" or "Critical".
+    pub min_severity: String,
+}
+
+impl Default for AutoAgent {
+    fn default() -> Self {
+        AutoAgent {
+            profile: String::new(),
+            min_severity: "Warning".into(),
+        }
+    }
+}
+
+impl AutoAgent {
+    /// The profile for an incident of this severity, if any.
+    pub fn profile_for(&self, severity: &str) -> Option<&str> {
+        let rank = |s: &str| match s {
+            "Critical" => 2,
+            "Warning" => 1,
+            _ => 0,
+        };
+        (!self.profile.is_empty() && rank(severity) >= rank(&self.min_severity))
+            .then_some(self.profile.as_str())
+    }
+}
+
 /// Server-side `[agent_profiles.<name>]`: routing and loop limits only.
 /// How the agent runs (adapter, workspace, prompt, allowed tools, blocked
 /// paths) is configured on the runner machine — Watchtower never sends

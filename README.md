@@ -23,7 +23,7 @@ Production server and application autopilot. A small agent watches the health an
 - **Server** (`watchtower-server`) — ingests events, runs rule-based correlation, groups them into **incidents**, and notifies. SQLite by default, Postgres supported. Headless — no web UI: you get alerted, and you acknowledge/resolve straight from the Telegram alert. An incident absorbs follow-up events (one timeline per problem) with a re-notify throttle.
 - **Exception capture** — apps POST exceptions to `/v1/errors`; the server fingerprints them (type + service + first frames) and each recurring bug becomes one incident — same list, timeline, resolve and notify flow as infra events.
 - **Custom events** — apps POST structured events to `/v1/events`; threshold rules (count / window / group-by / conditions) turn them into incidents, e.g. "10 payment failures for merchant mer_123 in 2 minutes" or "conversion below 70% on ≥100 attempts".
-- **Runner** (`watchtower-runner`, optional) — runs on an always-on Mac or workstation, connects **outbound only** (works behind NAT), takes agent tasks for incidents, runs Claude Code in an isolated git worktree, and reports a structured result. Watchtower resolves the incident only once it **observes recovery** — an agent saying "fixed" is not proof.
+- **Runner** (`watchtower-runner`, optional) — runs on an always-on Mac or workstation, connects **outbound only** (works behind NAT), takes agent tasks for incidents and runs Claude Code on them: **over SSH on the affected host** (restart a dead service, free a full disk, revert a bad config) and/or in an isolated git worktree of your code. It reports a structured result. Watchtower resolves the incident only once it **observes recovery** — an agent saying "fixed" is not proof.
 
 ```
 events (hosts, exceptions, apps) → rules → incident → notify (Telegram/Slack/webhook)
@@ -43,6 +43,14 @@ cargo build --release
 # control plane (server.toml: listen, db_url, auth_token, [[probes]]):
 ./target/release/watchtower-server --config /etc/watchtower/server.toml
 ```
+
+## Install with Claude Code (hands-off)
+
+Open this repository in Claude Code on the machine that should run the agent (e.g. your Mac, with SSH access to the servers) and say:
+
+> Install Watchtower on root@203.0.113.10 as server and agent, and on deploy@198.51.100.7 as an agent.
+
+Claude follows [`.claude/skills/install-watchtower/SKILL.md`](.claude/skills/install-watchtower/SKILL.md): control plane with automatic HTTPS (Caddy; `<ip>.sslip.io` if you have no domain), agents on every host, Telegram, and `watchtower-runner` on your machine with SSH access to all hosts — then verifies every piece. The only thing it asks you for is a Telegram bot token. The scripts it uses work on their own too: [`scripts/install-server.sh`](scripts/install-server.sh), [`scripts/install.sh`](scripts/install.sh) (agent), [`scripts/install-runner.sh`](scripts/install-runner.sh) (macOS/Linux).
 
 ## Install (Linux)
 
@@ -64,7 +72,7 @@ Pin a version (the tarball URL pattern is `<release>/download/<tag>/`; tarballs 
 named after the crate version, not the tag):
 
 ```bash
-INSTALL_URL=https://github.com/vrlda/watchtower/releases/download/v0.4.0/watchtower-0.4.0-x86_64-unknown-linux-musl.tar.gz \
+INSTALL_URL=https://github.com/vrlda/watchtower/releases/download/v0.5.0/watchtower-0.5.0-x86_64-unknown-linux-musl.tar.gz \
   INSTALL_SHA256=<hash from SHA256SUMS> \
   SERVER_URL=https://control.example.com TOKEN=secret \
   sudo bash scripts/install.sh
@@ -190,6 +198,33 @@ value = 0.70
 
 An incident can wake a coding agent on an always-on machine — no human in the loop as transport.
 
+**Simplest form — every incident, fixed over SSH.** On the server:
+
+```toml
+[runners.home-mac]
+token = "<long random token>"
+
+[agent_profiles.ops]
+
+[auto_agent]              # incidents whose rule dispatches no agent itself
+profile = "ops"
+min_severity = "Warning"  # Info | Warning | Critical
+```
+
+On the runner (`runner.toml`):
+
+```toml
+[profiles.ops]            # no workspace: the agent works on the hosts
+production = "remediate"  # none | diagnose | remediate (default)
+
+[hosts."<host id>"]       # how to reach each Watchtower host; without an
+ssh = "root@203.0.113.10" # entry the agent uses `ssh <host id>` (~/.ssh/config)
+```
+
+The agent gets the incident's host (and the other configured hosts) with an `ssh` command line. With `remediate` it may restart/reload services and containers, free disk space, fix permissions, renew certificates, revert a recent config change and stop runaway processes — capturing state first and listing every state-changing command in its result. It never deletes application data or backups, runs migrations, reboots, or touches firewall/SSH/auth settings or packages: those come back to you as `needs_human` with the exact commands it would run. `production` applies to every profile, including the code profiles below (set `none` to keep a profile off the hosts); `watchtower-runner check` verifies non-interactive SSH to every `[hosts]` entry.
+
+**Per-rule dispatch, with code changes:**
+
 **1. Server** (`server.toml`): a runner, a profile, and a rule that dispatches to it:
 
 ```toml
@@ -241,7 +276,7 @@ prompt_file = "/Users/dan/.watchtower-runner/payment-api.md"   # optional extra 
 ```
 
 ```bash
-watchtower-runner --config runner.toml check   # workspaces, CLI, server connection
+watchtower-runner --config runner.toml check   # workspaces, CLI, ssh to [hosts], server connection
 watchtower-runner --config runner.toml run      # or install deploy/com.watchtower.runner.plist (macOS) /
                                                  # deploy/watchtower-runner.service (Linux)
 ```
@@ -289,7 +324,7 @@ curl -fsS -X POST http://SERVER:8787/v1/errors \
 
 Agent (`agent.toml`): `state_file`, `watch_paths`, `watch_authorized_keys`, `ssh_brute_threshold`, `ssh_brute_window_secs`, `error_patterns`, `error_window_secs`, `error_threshold`, `docker_enabled`, `cert_paths`, `cert_warn_days`, `cert_crit_days`, `cert_scan_interval_secs`, `access_log_paths`, `request_rate_threshold`, `request_rate_window_secs`, `process_scan_interval_secs`, `scan_threshold`, `scan_window_secs`.
 
-Server (`server.toml`): `listen`, `db_url` (sqlite default; `postgres://` supported), `auth_token`, `host_tokens` (per-host tokens — an agent presenting one is attributed to that host, payload `host_id` overridden), `[event_sources.<name>]` (`token`, `source`, `environment` — a per-application token that can only post events and pins their source), `notify_min_interval_secs`, `[[probes]]` (uptime checks), `[notify.routing]`, `[[rule]]` (with `count`, `group_by`, `[[rule.where]]`, `[rule.recovery]`, `[[rule.dispatch]]`), `[runners.<id>]`, `[agent_profiles.<name>]`.
+Server (`server.toml`): `listen`, `db_url` (sqlite default; `postgres://` supported), `auth_token`, `host_tokens` (per-host tokens — an agent presenting one is attributed to that host, payload `host_id` overridden), `[event_sources.<name>]` (`token`, `source`, `environment` — a per-application token that can only post events and pins their source), `notify_min_interval_secs`, `[[probes]]` (uptime checks), `[notify.routing]`, `[[rule]]` (with `count`, `group_by`, `[[rule.where]]`, `[rule.recovery]`, `[[rule.dispatch]]`), `[runners.<id>]`, `[agent_profiles.<name>]`, `[auto_agent]` (`profile`, `min_severity`). Runner (`runner.toml`): `server_url`, `runner_id`, `token`, `work_dir`, `[hosts.<host id>]` (`ssh`), `[profiles.<name>]` (`workspace`, `autonomy`, `production`, `adapter`, `model`, ...).
 
 ## Development
 

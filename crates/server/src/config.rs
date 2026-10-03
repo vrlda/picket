@@ -32,6 +32,8 @@ struct ServerConfigToml {
     runners: HashMap<String, crate::dispatch::RunnerConfig>,
     #[serde(default)]
     agent_profiles: HashMap<String, crate::dispatch::AgentProfile>,
+    #[serde(default)]
+    auto_agent: crate::dispatch::AutoAgent,
 }
 
 /// `[event_sources.<name>]`: an application allowed to post events with its
@@ -73,6 +75,7 @@ impl From<ServerConfigToml> for ServerConfig {
             event_sources: t.event_sources,
             runners: t.runners,
             agent_profiles: t.agent_profiles,
+            auto_agent: t.auto_agent,
         }
     }
 }
@@ -123,6 +126,9 @@ pub struct ServerConfig {
     /// Agent profiles referenced by `[[rule.dispatch]] type = "agent"`.
     #[serde(default)]
     pub agent_profiles: HashMap<String, crate::dispatch::AgentProfile>,
+    /// Profile for incidents whose rule dispatches no agent itself.
+    #[serde(default)]
+    pub auto_agent: crate::dispatch::AutoAgent,
 }
 
 fn default_heartbeat_grace() -> i64 {
@@ -158,6 +164,7 @@ impl Default for ServerConfig {
             event_sources: HashMap::new(),
             runners: HashMap::new(),
             agent_profiles: HashMap::new(),
+            auto_agent: crate::dispatch::AutoAgent::default(),
         }
     }
 }
