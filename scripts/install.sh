@@ -13,10 +13,13 @@
 #     WATCHTOWER_BINARY=/path/to/watchtower-agent sh install.sh
 #   pinned release:
 #     INSTALL_URL=<release tarball URL> INSTALL_SHA256=<checksum> sh install.sh
+#   --host-id <name>: how this host appears in alerts (default: machine-id);
+#     the runner's [hosts.<name>] maps it to an ssh destination
 set -euo pipefail
 
 SERVER_URL="${SERVER_URL:-}"
 TOKEN="${TOKEN:-}"
+HOST_ID="${HOST_ID:-auto}"
 BINARY_SRC="${WATCHTOWER_BINARY:-}"
 INSTALL_URL="${INSTALL_URL:-}"
 INSTALL_SHA256="${INSTALL_SHA256:-}"
@@ -35,6 +38,11 @@ while [ "$#" -gt 0 ]; do
     --token)
       [ "$#" -ge 2 ] || { echo "--token requires a value" >&2; exit 1; }
       TOKEN="$2"
+      shift 2
+      ;;
+    --host-id)
+      [ "$#" -ge 2 ] || { echo "--host-id requires a value" >&2; exit 1; }
+      HOST_ID="$2"
       shift 2
       ;;
     *)
@@ -135,7 +143,7 @@ fi
 echo "==> writing config"
 mkdir -p "$CONFIG_DIR" "$SPOOL_DIR"
 cat > "$CONFIG_DIR/agent.toml" <<EOF
-host_id = "auto"
+host_id = "$HOST_ID"
 server_url = "$SERVER_URL"
 token = "$TOKEN"
 poll_interval_secs = 15
@@ -178,9 +186,9 @@ WantedBy=multi-user.target
 UNIT
 systemctl daemon-reload
 systemctl enable "$UNIT_NAME"
-systemctl start "$UNIT_NAME"
+systemctl restart "$UNIT_NAME"
 
 echo "==> discovery checklist"
 "$INSTALL_DIR/watchtower-agent" --config "$CONFIG_DIR/agent.toml" discover || true
 
-echo "install complete: server will register on first heartbeat"
+echo "install complete: host $HOST_ID registers on its first heartbeat"

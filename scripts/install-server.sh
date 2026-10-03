@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Watchtower control-plane installer (non-interactive, safe to re-run).
 #
-#   sudo bash scripts/install-server.sh [--with-agent]
+#   sudo bash scripts/install-server.sh [--with-agent [--host-id <name>]]
 #        [--domain <name> | --no-proxy --public-url <https://...>]
 #        [--telegram-token <bot token>] [--telegram-chat-id <id>]
 #        [--runner-id <id>]
@@ -24,6 +24,7 @@ DOMAIN=""
 PUBLIC_URL=""
 NO_PROXY=0
 WITH_AGENT=0
+HOST_ID=""
 TG_TOKEN="${TELEGRAM_BOT_TOKEN:-}"
 TG_CHAT="${TELEGRAM_CHAT_ID:-}"
 RUNNER_ID="runner"
@@ -40,6 +41,7 @@ while [ "$#" -gt 0 ]; do
     --public-url) need_value "$1" "$#"; PUBLIC_URL="${2%/}"; shift 2 ;;
     --no-proxy) NO_PROXY=1; shift ;;
     --with-agent) WITH_AGENT=1; shift ;;
+    --host-id) need_value "$1" "$#"; HOST_ID="$2"; shift 2 ;;
     --telegram-token) need_value "$1" "$#"; TG_TOKEN="$2"; shift 2 ;;
     --telegram-chat-id) need_value "$1" "$#"; TG_CHAT="$2"; shift 2 ;;
     --runner-id) need_value "$1" "$#"; RUNNER_ID="$2"; shift 2 ;;
@@ -256,7 +258,7 @@ if [ "$WITH_AGENT" = 1 ]; then
     curl -fsSL "https://raw.githubusercontent.com/$REPO/main/scripts/install.sh" -o "$AGENT_SCRIPT"
   fi
   WATCHTOWER_BINARY="$WORK/bin/watchtower-agent" bash "$AGENT_SCRIPT" \
-    --server-url "http://$LISTEN" --token "$AUTH_TOKEN"
+    --server-url "http://$LISTEN" --token "$AUTH_TOKEN" ${HOST_ID:+--host-id "$HOST_ID"}
 fi
 
 echo "==> done"
