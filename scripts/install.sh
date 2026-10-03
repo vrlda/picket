@@ -1,16 +1,16 @@
 #!/usr/bin/env bash
-# Watchtower agent installer.
+# Picket agent installer.
 #
 # Invocation styles:
 #   one command (fetches the latest release, verifies the checksum, installs):
-#     curl -fsSL https://raw.githubusercontent.com/vrlda/watchtower/main/scripts/install.sh \
+#     curl -fsSL https://raw.githubusercontent.com/vrlda/picket/main/scripts/install.sh \
 #       | sudo bash -s -- --server-url http://control.example.com --token secret
 #   flags:
 #     sudo bash scripts/install.sh --server-url http://control.example.com --token secret
 #   env vars (fallback for the flags):
 #     SERVER_URL=http://control.example.com TOKEN=secret sh install.sh
 #   local build:
-#     WATCHTOWER_BINARY=/path/to/watchtower-agent sh install.sh
+#     PICKET_BINARY=/path/to/picket-agent sh install.sh
 #   pinned release:
 #     INSTALL_URL=<release tarball URL> INSTALL_SHA256=<checksum> sh install.sh
 #   --host-id <name>: how this host appears in alerts (default: machine-id);
@@ -20,13 +20,13 @@ set -euo pipefail
 SERVER_URL="${SERVER_URL:-}"
 TOKEN="${TOKEN:-}"
 HOST_ID="${HOST_ID:-auto}"
-BINARY_SRC="${WATCHTOWER_BINARY:-}"
+BINARY_SRC="${PICKET_BINARY:-${WATCHTOWER_BINARY:-}}"
 INSTALL_URL="${INSTALL_URL:-}"
 INSTALL_SHA256="${INSTALL_SHA256:-}"
 INSTALL_DIR="/usr/local/bin"
-CONFIG_DIR="/etc/watchtower"
-SPOOL_DIR="/var/lib/watchtower/spool"
-UNIT_NAME="watchtower-agent.service"
+CONFIG_DIR="/etc/picket"
+SPOOL_DIR="/var/lib/picket/spool"
+UNIT_NAME="picket-agent.service"
 
 while [ "$#" -gt 0 ]; do
   case "$1" in
@@ -90,7 +90,7 @@ verify_sha256() {
 # the git tag (e.g. v0.2.0).
 if [ -z "$INSTALL_URL" ] && [ -z "$INSTALL_SHA256" ] && [ -z "$BINARY_SRC" ]; then
   echo "==> resolving latest release"
-  LATEST_JSON="$(curl -fsSL https://api.github.com/repos/vrlda/watchtower/releases/latest)" || {
+  LATEST_JSON="$(curl -fsSL https://api.github.com/repos/vrlda/picket/releases/latest)" || {
     echo "failed to query GitHub for the latest release" >&2
     exit 1
   }
@@ -102,7 +102,7 @@ if [ -z "$INSTALL_URL" ] && [ -z "$INSTALL_SHA256" ] && [ -z "$BINARY_SRC" ]; th
     aarch64|arm64) TARGET="aarch64-unknown-linux-musl" ;;
     *) echo "unsupported architecture: $ARCH" >&2; exit 1 ;;
   esac
-  BASE="https://github.com/vrlda/watchtower/releases/download/$TAG"
+  BASE="https://github.com/vrlda/picket/releases/download/$TAG"
   ASSET_URL="$(printf '%s' "$LATEST_JSON" | grep -o '"browser_download_url": *"[^"]*'"$TARGET"'.tar.gz"' | sed 's/.*"\([^"]*\)"$/\1/' | head -n 1)" || true
   [ -n "$ASSET_URL" ] || { echo "could not find a $TARGET asset in release $TAG" >&2; exit 1; }
   ASSET="$(basename "$ASSET_URL")"
@@ -127,17 +127,17 @@ if [ -n "$INSTALL_URL" ]; then
   curl -fsSL "$INSTALL_URL" -o "$TMP"
   verify_sha256 "$TMP" "$INSTALL_SHA256" || { echo "checksum mismatch — aborting" >&2; exit 1; }
   tar -xzf "$TMP" -C "$INSTALL_DIR"
-  chmod 0755 "$INSTALL_DIR/watchtower-agent" "$INSTALL_DIR/watchtower-server"
+  chmod 0755 "$INSTALL_DIR/picket-agent" "$INSTALL_DIR/picket-server"
 elif [ -n "$BINARY_SRC" ]; then
-  install -m 0755 "$BINARY_SRC" "$INSTALL_DIR/watchtower-agent"
+  install -m 0755 "$BINARY_SRC" "$INSTALL_DIR/picket-agent"
 else
-  echo "set WATCHTOWER_BINARY or INSTALL_URL(+INSTALL_SHA256)" >&2
+  echo "set PICKET_BINARY or INSTALL_URL(+INSTALL_SHA256)" >&2
   exit 1
 fi
 
 echo "==> creating service user"
-if ! getent passwd watchtower >/dev/null 2>&1; then
-  useradd --system --no-create-home --shell /usr/sbin/nologin watchtower
+if ! getent passwd picket >/dev/null 2>&1; then
+  useradd --system --no-create-home --shell /usr/sbin/nologin picket
 fi
 
 echo "==> writing config"
@@ -150,8 +150,8 @@ poll_interval_secs = 15
 heartbeat_secs = 30
 spool_dir = "$SPOOL_DIR"
 EOF
-chown -R watchtower:watchtower "$SPOOL_DIR"
-chown watchtower:watchtower "$CONFIG_DIR/agent.toml"
+chown -R picket:picket "$SPOOL_DIR"
+chown picket:picket "$CONFIG_DIR/agent.toml"
 chmod 600 "$CONFIG_DIR/agent.toml"
 
 echo "==> installing systemd unit"
@@ -162,15 +162,15 @@ if getent group docker >/dev/null 2>&1; then
 fi
 cat > "/etc/systemd/system/$UNIT_NAME" <<UNIT
 [Unit]
-Description=Watchtower agent
+Description=Picket agent
 After=network-online.target
 Wants=network-online.target
 
 [Service]
-User=watchtower
-Group=watchtower
+User=picket
+Group=picket
 SupplementaryGroups=$SUPP_GROUPS
-ExecStart=$INSTALL_DIR/watchtower-agent run
+ExecStart=$INSTALL_DIR/picket-agent run
 Restart=always
 RestartSec=5
 NoNewPrivileges=yes
@@ -178,7 +178,7 @@ ProtectSystem=strict
 ProtectHome=yes
 PrivateTmp=yes
 ReadWritePaths=$SPOOL_DIR
-RuntimeDirectory=watchtower
+RuntimeDirectory=picket
 CapabilityBoundingSet=
 
 [Install]
@@ -189,6 +189,6 @@ systemctl enable "$UNIT_NAME"
 systemctl restart "$UNIT_NAME"
 
 echo "==> discovery checklist"
-"$INSTALL_DIR/watchtower-agent" --config "$CONFIG_DIR/agent.toml" discover || true
+"$INSTALL_DIR/picket-agent" --config "$CONFIG_DIR/agent.toml" discover || true
 
 echo "install complete: host $HOST_ID registers on its first heartbeat"

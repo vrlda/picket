@@ -1,12 +1,12 @@
 use std::path::Path;
 
-use wt_common::{AgentEvent, Config, EventKind, Evidence, Severity};
+use picket_common::{AgentEvent, Config, EventKind, Evidence, Severity};
 
-/// "notAfter=Sep 16 12:00:00 2026 GMT" → unix seconds (via wt_common::civil).
+/// "notAfter=Sep 16 12:00:00 2026 GMT" → unix seconds (via picket_common::civil).
 pub fn parse_enddate(line: &str) -> Option<i64> {
     let rest = line.strip_prefix("notAfter=")?;
     let date = rest.strip_suffix(" GMT")?;
-    wt_common::civil::parse_gm_date(date)
+    picket_common::civil::parse_gm_date(date)
 }
 
 /// Warning when expiring within warn_days, Critical within crit_days or
@@ -111,7 +111,7 @@ mod tests {
     fn parses_openssl_enddate() {
         let got = parse_enddate("notAfter=Sep 16 12:00:00 2026 GMT");
         assert!(got.is_some());
-        let expected = wt_common::civil::parse_gm_date("Sep 16 12:00:00 2026").unwrap();
+        let expected = picket_common::civil::parse_gm_date("Sep 16 12:00:00 2026").unwrap();
         assert_eq!(got.unwrap(), expected);
     }
 
@@ -124,14 +124,14 @@ mod tests {
     #[test]
     fn severity_by_remaining_days() {
         let cfg = cfg_with(vec![]);
-        let now = wt_common::civil::parse_gm_date("Sep 1 00:00:00 2026").unwrap();
-        let expires_in_10d = wt_common::civil::parse_gm_date("Sep 11 00:00:00 2026").unwrap();
+        let now = picket_common::civil::parse_gm_date("Sep 1 00:00:00 2026").unwrap();
+        let expires_in_10d = picket_common::civil::parse_gm_date("Sep 11 00:00:00 2026").unwrap();
         assert_eq!(cert_severity(expires_in_10d, now, &cfg), Severity::Warning);
-        let expires_in_2d = wt_common::civil::parse_gm_date("Sep 3 00:00:00 2026").unwrap();
+        let expires_in_2d = picket_common::civil::parse_gm_date("Sep 3 00:00:00 2026").unwrap();
         assert_eq!(cert_severity(expires_in_2d, now, &cfg), Severity::Critical);
-        let expires_in_30d = wt_common::civil::parse_gm_date("Oct 1 00:00:00 2026").unwrap();
+        let expires_in_30d = picket_common::civil::parse_gm_date("Oct 1 00:00:00 2026").unwrap();
         assert_eq!(cert_severity(expires_in_30d, now, &cfg), Severity::Info);
-        let expired = wt_common::civil::parse_gm_date("Aug 1 00:00:00 2026").unwrap();
+        let expired = picket_common::civil::parse_gm_date("Aug 1 00:00:00 2026").unwrap();
         assert_eq!(cert_severity(expired, now, &cfg), Severity::Critical);
     }
 
@@ -154,7 +154,7 @@ mod tests {
     fn scan_emits_for_expiring_cert() {
         let runner = crate::cmd::FakeCli("notAfter=Sep 10 00:00:00 2026 GMT\n".into());
         let cfg = cfg_with(vec!["/etc/test/cert.pem".to_string()]);
-        let now = wt_common::civil::parse_gm_date("Sep 1 00:00:00 2026").unwrap();
+        let now = picket_common::civil::parse_gm_date("Sep 1 00:00:00 2026").unwrap();
         let evs = scan_certs(
             &["/etc/test/cert.pem".to_string()],
             &cfg,

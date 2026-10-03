@@ -92,7 +92,7 @@ pub enum EventKind {
     AppException,
 }
 
-/// Event type: a built-in Watchtower kind (closed set, PascalCase on the
+/// Event type: a built-in Picket kind (closed set, PascalCase on the
 /// wire, e.g. "ServiceFailed") or an application-defined custom kind (open
 /// set, dotted lowercase, e.g. "payment.request_failed"). Serialized as a
 /// plain string either way.
@@ -308,7 +308,7 @@ pub struct Config {
 
 /// Default agent state path (matches the install layout).
 fn default_state_file() -> String {
-    "/var/lib/watchtower/agent-state.json".into()
+    "/var/lib/picket/agent-state.json".into()
 }
 
 impl Default for Config {
@@ -328,7 +328,7 @@ impl Default for Config {
             cpu_spike_ratio: 2.5,
             mem_warn_pct: 85.0,
             swap_warn_pct: 50.0,
-            spool_dir: "/var/lib/watchtower/spool".into(),
+            spool_dir: "/var/lib/picket/spool".into(),
             watch_paths: Vec::new(),
             watch_authorized_keys: true,
             error_patterns: Vec::new(),
@@ -347,7 +347,7 @@ impl Default for Config {
             scan_threshold: 25,
             scan_window_secs: 10,
             process_scan_interval_secs: 30,
-            state_file: "/var/lib/watchtower/agent-state.json".into(),
+            state_file: "/var/lib/picket/agent-state.json".into(),
         }
     }
 }
@@ -422,7 +422,7 @@ mod tests {
     fn state_file_defaults_to_install_path() {
         let cfg: Config =
             toml::from_str("server_url = \"https://ctl.example.com\"\ntoken = \"abc\"\n").unwrap();
-        assert_eq!(cfg.state_file, "/var/lib/watchtower/agent-state.json");
+        assert_eq!(cfg.state_file, "/var/lib/picket/agent-state.json");
         let cfg: Config = toml::from_str(
             "server_url = \"https://ctl.example.com\"\ntoken = \"abc\"\n\
              state_file = \"/tmp/agent-state.json\"\n",

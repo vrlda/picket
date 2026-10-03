@@ -1,6 +1,6 @@
 [package]
-name = "watchtower-agent"
-version = "0.5.0"
+name = "picket-agent"
+version = "0.6.0"
 edition = "2021"
 
 [dependencies]
@@ -12,7 +12,7 @@ toml = "0.8"
 libc = "0.2"
 regex = "1"
 glob = "0.3"
-wt-common = { path = "../wt-common" }
+picket-common = { path = "../picket-common" }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 inotify = "0.10"

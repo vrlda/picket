@@ -1,13 +1,20 @@
-//! Minimal watchtower SDK. Apps call [`Client::capture`] with an
+//! Minimal picket SDK. Apps call [`Client::capture`] with an
 //! exception (type, message, level, stack frames; the server fingerprints
 //! and groups them) or [`Client::capture_event`] with a custom
 //! application/business event ("payment.request_failed") that rules turn
 //! into incidents. Blocking, no async, no external services beyond the
-//! watchtower server.
+//! picket server.
 
 use std::time::Duration;
 
-/// SDK configuration. All fields have env defaults (the WATCHTOWER_* family).
+/// PICKET_<name>, falling back to the pre-rename WATCHTOWER_<name>.
+fn env(name: &str) -> Option<String> {
+    std::env::var(format!("PICKET_{name}"))
+        .or_else(|_| std::env::var(format!("WATCHTOWER_{name}")))
+        .ok()
+}
+
+/// SDK configuration. All fields have env defaults (the PICKET_* family).
 #[derive(Debug, Clone)]
 pub struct Client {
     pub endpoint: String,
@@ -18,23 +25,19 @@ pub struct Client {
 }
 
 impl Client {
-    /// Build from the WATCHTOWER_ENDPOINT / WATCHTOWER_TOKEN /
-    /// WATCHTOWER_HOST_ID / WATCHTOWER_SERVICE / WATCHTOWER_ENVIRONMENT
+    /// Build from the PICKET_ENDPOINT / PICKET_TOKEN /
+    /// PICKET_HOST_ID / PICKET_SERVICE / PICKET_ENVIRONMENT
     /// env vars (host_id defaults to the OS hostname, service to "app",
-    /// environment to "prod").
+    /// environment to "prod"). The pre-rename WATCHTOWER_* names are still
+    /// read as a fallback.
     pub fn from_env() -> Option<Client> {
-        let endpoint = std::env::var("WATCHTOWER_ENDPOINT").ok()?;
-        let token = std::env::var("WATCHTOWER_TOKEN").ok()?;
-        let host_id = std::env::var("WATCHTOWER_HOST_ID")
-            .ok()
+        let endpoint = env("ENDPOINT")?;
+        let token = env("TOKEN")?;
+        let host_id = env("HOST_ID")
             .or_else(|| std::env::var("HOSTNAME").ok())
             .unwrap_or_else(|| "host".into());
-        let service = std::env::var("WATCHTOWER_SERVICE")
-            .ok()
-            .unwrap_or_else(|| "app".into());
-        let environment = std::env::var("WATCHTOWER_ENVIRONMENT")
-            .ok()
-            .unwrap_or_else(|| "prod".into());
+        let service = env("SERVICE").unwrap_or_else(|| "app".into());
+        let environment = env("ENVIRONMENT").unwrap_or_else(|| "prod".into());
         Some(Client {
             endpoint,
             token,
@@ -75,7 +78,7 @@ impl Client {
     /// environment. Best-effort with one retry; never panics.
     ///
     /// ```no_run
-    /// # let client = watchtower_sdk::Client::from_env().unwrap();
+    /// # let client = picket_sdk::Client::from_env().unwrap();
     /// client.capture_event(serde_json::json!({
     ///     "kind": "payment.request_failed",
     ///     "summary": "Payment request failed",
@@ -132,6 +135,20 @@ impl Client {
 mod tests {
     use super::*;
     use std::io::{Read, Write};
+
+    #[test]
+    fn env_falls_back_to_pre_rename_names() {
+        // the only test touching these variables
+        std::env::set_var("WATCHTOWER_ENDPOINT", "http://old");
+        std::env::set_var("WATCHTOWER_TOKEN", "old-token");
+        std::env::set_var("PICKET_TOKEN", "new-token");
+        let c = Client::from_env().unwrap();
+        assert_eq!(c.endpoint, "http://old");
+        assert_eq!(c.token, "new-token", "the new name wins");
+        for k in ["WATCHTOWER_ENDPOINT", "WATCHTOWER_TOKEN", "PICKET_TOKEN"] {
+            std::env::remove_var(k);
+        }
+    }
 
     #[test]
     fn capture_posts_expected_payload() {

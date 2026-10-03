@@ -32,7 +32,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
-      - run: cargo test -p watchtower-server --features ci-postgres -- --ignored
+      - run: cargo test -p picket-server --features ci-postgres -- --ignored
         env:
           DATABASE_URL: postgres://postgres:postgres@localhost:5432/postgres
 
@@ -40,7 +40,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - run: python3 sdk/python/test_watchtower.py
+      - run: python3 sdk/python/test_picket.py
       - run: node --test sdk/node/test.js
       - run: go test ./...
         working-directory: sdk/go

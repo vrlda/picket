@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
 use crate::cmd::CommandRunner;
-use wt_common::{AgentEvent, EventKind, Severity};
+use picket_common::{AgentEvent, EventKind, Severity};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ServiceState {
@@ -112,7 +112,7 @@ impl CrashTracker {
                         list.len(),
                         self.window_secs
                     ),
-                    evidence: vec![wt_common::Evidence {
+                    evidence: vec![picket_common::Evidence {
                         ts: ts as i64 * 1000,
                         source: "systemd".into(),
                         detail: format!("ActiveState=failed at t={}", ts),

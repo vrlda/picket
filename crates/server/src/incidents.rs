@@ -1,6 +1,6 @@
+use picket_common::AgentEvent;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
-use wt_common::AgentEvent;
 
 use crate::ingest::now_ms;
 
@@ -407,7 +407,7 @@ pub async fn set_rule_id(pool: &sqlx::AnyPool, id: &str, rule_id: &str) -> Resul
 #[cfg(test)]
 mod tests {
     use super::*;
-    use wt_common::{AgentEvent, EventKind, Severity};
+    use picket_common::{AgentEvent, EventKind, Severity};
 
     async fn pool() -> sqlx::AnyPool {
         crate::db::ensure_any_drivers();

@@ -2,8 +2,8 @@ use axum::extract::{Request, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::Json;
+use picket_common::{AgentEvent, EventType, Severity};
 use serde_json::json;
-use wt_common::{AgentEvent, EventType, Severity};
 
 use crate::api::TelemetryPayload;
 #[cfg(test)]

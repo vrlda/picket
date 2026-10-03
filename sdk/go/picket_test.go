@@ -1,4 +1,4 @@
-package watchtower
+package picket
 
 import (
 	"encoding/json"

@@ -1,24 +1,25 @@
 "use strict";
-// Watchtower SDK (zero deps): exception capture and custom events.
-// Env: WATCHTOWER_ENDPOINT (required), WATCHTOWER_TOKEN (required),
-// WATCHTOWER_HOST_ID, WATCHTOWER_SERVICE, WATCHTOWER_ENVIRONMENT.
+// Picket SDK (zero deps): exception capture and custom events.
+// Env: PICKET_ENDPOINT (required), PICKET_TOKEN (required),
+// PICKET_HOST_ID, PICKET_SERVICE, PICKET_ENVIRONMENT.
 
 const http = require("http");
 const https = require("https");
 const os = require("os");
 
 function env(name, dflt) {
-  return process.env[name] || dflt;
+  // pre-rename WATCHTOWER_* names still work as a fallback
+  return process.env[name] || process.env[name.replace("PICKET_", "WATCHTOWER_")] || dflt;
 }
 
 class Client {
   constructor(opts) {
     opts = opts || {};
-    this.endpoint = (opts.endpoint || env("WATCHTOWER_ENDPOINT", "")).replace(/\/$/, "");
-    this.token = opts.token || env("WATCHTOWER_TOKEN", "");
-    this.host_id = opts.host_id || env("WATCHTOWER_HOST_ID", os.hostname());
-    this.service = opts.service || env("WATCHTOWER_SERVICE", "app");
-    this.environment = opts.environment || env("WATCHTOWER_ENVIRONMENT", "prod");
+    this.endpoint = (opts.endpoint || env("PICKET_ENDPOINT", "")).replace(/\/$/, "");
+    this.token = opts.token || env("PICKET_TOKEN", "");
+    this.host_id = opts.host_id || env("PICKET_HOST_ID", os.hostname());
+    this.service = opts.service || env("PICKET_SERVICE", "app");
+    this.environment = opts.environment || env("PICKET_ENVIRONMENT", "prod");
   }
 
   capture(level, type, message, frames) {

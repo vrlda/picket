@@ -46,7 +46,7 @@ pub fn channels_for(cfg: &NotifyConfig, severity: &str) -> Vec<String> {
 /// Generic webhook payload — the full incident anatomy.
 pub fn webhook_payload(incident_json: &serde_json::Value) -> String {
     serde_json::to_string(&json!({
-        "type": "watchtower.incident",
+        "type": "picket.incident",
         "severity": incident_json["severity"],
         "status": incident_json["status"],
         "headline": incident_json["headline"],
@@ -111,7 +111,7 @@ pub fn slack_payload(incident_json: &serde_json::Value) -> String {
             "title": format!("[{}] {}", escape_slack(incident_json["severity"].as_str().unwrap_or("")), escape_slack(incident_json["headline"].as_str().unwrap_or(""))),
             "text": text,
             "footer": format!(
-                "watchtower · {} · incident {}",
+                "picket · {} · incident {}",
                 escape_slack(incident_json["host_id"].as_str().unwrap_or("")),
                 escape_slack(incident_json["id"].as_str().unwrap_or(""))
             ),
@@ -879,11 +879,8 @@ impl TelegramBot {
     async fn register(&mut self, chat: i64) {
         *self.client.chat_id.lock().unwrap() = Some(chat);
         persist_telegram_chat(&self.pool, self.client).await;
-        self.say(
-            chat,
-            "Chat registered — Watchtower alerts will be sent here.",
-        )
-        .await;
+        self.say(chat, "Chat registered — Picket alerts will be sent here.")
+            .await;
         eprintln!("telegram: chat {} registered", chat);
     }
 
@@ -966,7 +963,7 @@ impl TelegramBot {
             _ => {
                 self.answer(
                     query_id,
-                    "Incident not found (it may belong to another Watchtower server).",
+                    "Incident not found (it may belong to another Picket server).",
                 )
                 .await;
                 return;
@@ -1355,12 +1352,12 @@ mod tests {
     #[test]
     fn start_command_variants() {
         assert!(is_start_command("/start"));
-        assert!(is_start_command("/start@WatchtowerBot"));
+        assert!(is_start_command("/start@PicketBot"));
         assert!(is_start_command("/start deeplink"));
         assert!(!is_start_command("/started"));
         assert!(!is_start_command("hunter2"));
         assert_eq!(
-            registrar_step("pw", "/start@WatchtowerBot", false),
+            registrar_step("pw", "/start@PicketBot", false),
             RegStep::AskPassword
         );
     }

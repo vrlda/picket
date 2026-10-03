@@ -1,5 +1,5 @@
+use picket_common::AgentEvent;
 use serde::Deserialize;
-use wt_common::AgentEvent;
 
 /// POST /v1/telemetry body.
 #[derive(Debug, Deserialize)]
@@ -10,7 +10,7 @@ pub struct TelemetryPayload {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use wt_common::{EventKind, Heartbeat};
+    use picket_common::{EventKind, Heartbeat};
 
     #[test]
     fn telemetry_batch_payload_deserializes() {

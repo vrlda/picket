@@ -12,15 +12,15 @@ cleanup() {
   [ -n "$SERVER_PID" ] && kill "$SERVER_PID" 2>/dev/null || true
   [ -n "$AGENT_PID" ] && kill "$AGENT_PID" 2>/dev/null || true
   rm -rf "$WORK"
-  systemctl stop watchtower-demo 2>/dev/null || true
-  rm -f /etc/systemd/system/watchtower-demo.service /etc/watchtower-demo.conf
+  systemctl stop picket-demo 2>/dev/null || true
+  rm -f /etc/systemd/system/picket-demo.service /etc/picket-demo.conf
   systemctl daemon-reload 2>/dev/null || true
 }
 trap cleanup EXIT
 
 PORT=18788
 TOKEN="demo-token"
-SVC="watchtower-demo"
+SVC="picket-demo"
 
 cat > "$WORK/server.toml" <<EOF
 listen = "127.0.0.1:$PORT"
@@ -35,7 +35,7 @@ token = "$TOKEN"
 poll_interval_secs = 2
 heartbeat_secs = 2
 spool_dir = "$WORK/spool"
-watch_paths = ["/etc/watchtower-demo.conf"]
+watch_paths = ["/etc/picket-demo.conf"]
 EOF
 
 echo "==> building"
@@ -44,30 +44,30 @@ echo "==> building"
 echo "==> demo unit + config"
 cat > /etc/systemd/system/$SVC.service <<UNIT
 [Unit]
-Description=Watchtower demo unit
+Description=Picket demo unit
 
 [Service]
-ExecStart=/bin/sh -c 'test -f /etc/watchtower-demo.conf && exit 1 || sleep 3600'
+ExecStart=/bin/sh -c 'test -f /etc/picket-demo.conf && exit 1 || sleep 3600'
 Restart=on-failure
 
 [Install]
 WantedBy=multi-user.target
 UNIT
-rm -f /etc/watchtower-demo.conf   # healthy: no config file → unit stays up
+rm -f /etc/picket-demo.conf   # healthy: no config file → unit stays up
 systemctl daemon-reload && systemctl start $SVC
 
 echo "==> starting server + agent"
-"$ROOT/target/release/watchtower-server" --config "$WORK/server.toml" &
+"$ROOT/target/release/picket-server" --config "$WORK/server.toml" &
 SERVER_PID=$!
 sleep 1
-"$ROOT/target/release/watchtower-agent" --config "$WORK/agent.toml" run &
+"$ROOT/target/release/picket-agent" --config "$WORK/agent.toml" run &
 AGENT_PID=$!
 sleep 5
 
 echo "==> scenario"
 # config file appears (FIM event) → unit restarted (journald ServiceRestarted)
 # → unit exits 1 (journald + systemd sensor ServiceFailed)
-touch /etc/watchtower-demo.conf
+touch /etc/picket-demo.conf
 systemctl restart $SVC
 sleep 20
 

@@ -33,12 +33,12 @@ echo "==> building"
 (cd "$ROOT" && cargo build --release -q)
 
 echo "==> starting server"
-"$ROOT/target/release/watchtower-server" --config "$WORK/server.toml" &
+"$ROOT/target/release/picket-server" --config "$WORK/server.toml" &
 SERVER_PID=$!
 sleep 1
 
 echo "==> heartbeat round-trip (agent binary, run 3s)"
-"$ROOT/target/release/watchtower-agent" --config "$WORK/agent.toml" run &
+"$ROOT/target/release/picket-agent" --config "$WORK/agent.toml" run &
 AGENT_PID=$!
 sleep 3
 kill "$AGENT_PID" 2>/dev/null || true

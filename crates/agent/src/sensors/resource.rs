@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
 use crate::procfs::{MemInfo, NetDevErrors, ProcFs};
-use wt_common::{AgentEvent, Config, EventKind, Evidence, Severity};
+use picket_common::{AgentEvent, Config, EventKind, Evidence, Severity};
 
 /// Percentage of CPU time spent busy, given deltas between two samples.
 pub fn cpu_usage_pct(busy_delta: u64, total_delta: u64) -> f64 {
@@ -142,8 +142,8 @@ pub fn netdev_events(errs: &HashMap<String, NetDevErrors>, host: &str, ts: i64) 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use picket_common::{EventKind, Severity};
     use std::path::PathBuf;
-    use wt_common::{EventKind, Severity};
 
     fn cfg() -> Config {
         Config {

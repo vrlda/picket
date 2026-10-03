@@ -8,9 +8,9 @@ use axum::extract::{Request, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::Json;
+use picket_common::{AgentEvent, EventType, Evidence, Severity};
 use serde::Deserialize;
 use serde_json::{json, Map, Value};
-use wt_common::{AgentEvent, EventType, Evidence, Severity};
 
 use crate::app::AppState;
 
@@ -80,7 +80,7 @@ pub fn build_event(
     let kind = EventType::parse(&input.kind)?;
     if !kind.is_custom() {
         return Err(format!(
-            "{:?} is a built-in Watchtower kind; custom events use a dotted name like \"payment.request_failed\"",
+            "{:?} is a built-in Picket kind; custom events use a dotted name like \"payment.request_failed\"",
             input.kind
         ));
     }
@@ -382,7 +382,7 @@ mod tests {
             r#"{"id":"e","ts":1,"host_id":"h","key":"k","kind":"ServiceFailed","severity":"Critical","summary":"s","evidence":[]}"#,
         )
         .unwrap();
-        assert_eq!(ev.kind, wt_common::EventKind::ServiceFailed);
+        assert_eq!(ev.kind, picket_common::EventKind::ServiceFailed);
         assert_eq!(
             serde_json::to_string(&ev).unwrap(),
             r#"{"id":"e","ts":1,"host_id":"h","key":"k","kind":"ServiceFailed","severity":"Critical","summary":"s","evidence":[]}"#

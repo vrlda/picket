@@ -5,7 +5,7 @@ use std::sync::mpsc::Receiver;
 use crate::sensors::fim_types::{change_event, FimEvent};
 use crate::sensors::netflow::NetState;
 use crate::sensors::sshauth::{base_ssh_event, classify, AuthKind, BruteForceTracker, SeenIps};
-use wt_common::{AgentEvent, Config, EventKind, Evidence, Severity};
+use picket_common::{AgentEvent, Config, EventKind, Evidence, Severity};
 
 /// Milliseconds between persistence directory scans (cron.d + systemd units).
 const PERSISTENCE_SCAN_MS: i64 = 300_000;
@@ -62,7 +62,7 @@ impl SpikeDetector {
 /// Suppress re-emission of the same (kind, key) within `window_secs`.
 pub struct Deduper {
     window_secs: i64,
-    last_emitted: HashMap<(wt_common::EventType, String), i64>,
+    last_emitted: HashMap<(picket_common::EventType, String), i64>,
 }
 
 impl Deduper {
@@ -73,7 +73,7 @@ impl Deduper {
         }
     }
 
-    pub fn should_emit(&mut self, kind: &wt_common::EventType, key: &str, ts: i64) -> bool {
+    pub fn should_emit(&mut self, kind: &picket_common::EventType, key: &str, ts: i64) -> bool {
         let entry = self
             .last_emitted
             .entry((kind.clone(), key.to_string()))
@@ -303,7 +303,7 @@ impl AgentState {
 
     #[cfg(test)]
     /// Fresh state for tests. Never loads the default state file — on a
-    /// machine where the agent has run, /var/lib/watchtower/agent-state.json
+    /// machine where the agent has run, /var/lib/picket/agent-state.json
     /// carries a live journal cursor that silently filters test fixtures.
     pub fn for_tests() -> Self {
         let cfg = Config {
@@ -837,7 +837,7 @@ mod tests {
     }
 
     use super::*;
-    use wt_common::EventKind;
+    use picket_common::EventKind;
 
     #[test]
     fn spike_detector_flags_deviation_above_ratio() {
@@ -1098,7 +1098,7 @@ mod tests {
         assert!(evs.iter().any(|e| e.kind == EventKind::RootLogin));
         // root login from a first-seen IP escalates to Critical
         let root = evs.iter().find(|e| e.kind == EventKind::RootLogin).unwrap();
-        assert_eq!(root.severity, wt_common::Severity::Critical);
+        assert_eq!(root.severity, picket_common::Severity::Critical);
     }
 
     #[test]
@@ -1124,7 +1124,7 @@ mod tests {
             &mut state,
         );
         let sudo = evs.iter().find(|e| e.kind == EventKind::SudoUsed).unwrap();
-        assert_eq!(sudo.severity, wt_common::Severity::Info);
+        assert_eq!(sudo.severity, picket_common::Severity::Info);
     }
 
     #[test]
@@ -1153,7 +1153,7 @@ mod tests {
             .iter()
             .find(|e| e.kind == EventKind::ServiceRestarted)
             .expect("restart event");
-        assert_eq!(ev.severity, wt_common::Severity::Info);
+        assert_eq!(ev.severity, picket_common::Severity::Info);
         assert_eq!(ev.key, "svc:myapp.service");
     }
 
@@ -1266,7 +1266,7 @@ mod tests {
             "threshold crossed must emit, got {:?}",
             evs.iter().map(|e| e.kind.clone()).collect::<Vec<_>>()
         );
-        assert_eq!(spike.unwrap().severity, wt_common::Severity::Warning);
+        assert_eq!(spike.unwrap().severity, picket_common::Severity::Warning);
         assert!(spike.unwrap().summary.contains("ERROR"));
     }
 
@@ -1356,13 +1356,14 @@ mod tests {
             &runners,
             &mut state,
         );
+        assert!(evs.iter().any(
+            |e| e.kind == EventKind::OomKill && e.severity == picket_common::Severity::Critical
+        ));
+        assert!(evs.iter().any(|e| e.kind == EventKind::KernelPanic));
         assert!(evs
             .iter()
-            .any(|e| e.kind == EventKind::OomKill && e.severity == wt_common::Severity::Critical));
-        assert!(evs.iter().any(|e| e.kind == EventKind::KernelPanic));
-        assert!(evs.iter().any(
-            |e| e.kind == EventKind::ClockChange && e.severity == wt_common::Severity::Warning
-        ));
+            .any(|e| e.kind == EventKind::ClockChange
+                && e.severity == picket_common::Severity::Warning));
     }
 
     #[test]
@@ -1387,13 +1388,11 @@ mod tests {
             &runners,
             &mut state,
         );
-        assert!(evs
-            .iter()
-            .any(|e| e.kind == EventKind::NewUser && e.severity == wt_common::Severity::Warning));
-        assert!(evs
-            .iter()
-            .any(|e| e.kind == EventKind::PackageInstalled
-                && e.severity == wt_common::Severity::Info));
+        assert!(evs.iter().any(
+            |e| e.kind == EventKind::NewUser && e.severity == picket_common::Severity::Warning
+        ));
+        assert!(evs.iter().any(|e| e.kind == EventKind::PackageInstalled
+            && e.severity == picket_common::Severity::Info));
         // first persistence scan only seeds the baseline — no events
         assert!(state.persistence_snapshot.is_some());
         assert!(!evs.iter().any(|e| e.kind == EventKind::PersistenceChanged));

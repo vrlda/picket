@@ -3,8 +3,8 @@ use std::collections::HashMap;
 use axum::extract::{Query, State};
 use axum::http::StatusCode;
 use axum::Json;
+use picket_common::AgentEvent;
 use serde_json::json;
-use wt_common::AgentEvent;
 
 use crate::app::AppState;
 
@@ -52,7 +52,7 @@ pub(crate) fn row_to_event(r: EventRow) -> Option<AgentEvent> {
         ts,
         host_id,
         key,
-        kind: wt_common::EventType::parse(&kind).ok()?,
+        kind: picket_common::EventType::parse(&kind).ok()?,
         severity: serde_json::from_value(json!(severity)).ok()?,
         summary,
         evidence: serde_json::from_str(&evidence_json).unwrap_or_default(),
@@ -259,7 +259,7 @@ mod tests {
     use crate::app::build_app;
     use crate::test_util::{call, get_ok};
     use axum::http::StatusCode;
-    use wt_common::{AgentEvent, EventKind, Severity};
+    use picket_common::{AgentEvent, EventKind, Severity};
 
     async fn seed(state: &AppState, id: &str, ts: i64, kind: EventKind, sev: Severity) {
         let ev = AgentEvent {
@@ -270,7 +270,7 @@ mod tests {
             kind: kind.into(),
             severity: sev,
             summary: format!("event {}", id),
-            evidence: vec![wt_common::Evidence {
+            evidence: vec![picket_common::Evidence {
                 ts,
                 source: "test".into(),
                 detail: "d".into(),

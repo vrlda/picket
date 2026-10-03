@@ -299,7 +299,7 @@ pub async fn dispatch_agent(
     } else {
         format!("Agent task queued (profile {profile_name}) — but no configured runner matches this profile")
     };
-    log_task(pool, &inc.id, &id, "watchtower", &note).await;
+    log_task(pool, &inc.id, &id, "picket", &note).await;
     state.task_notify.notify_waiters();
     Ok(DispatchOutcome::Created(id))
 }
@@ -345,7 +345,7 @@ pub async fn dispatch_for_incident(state: &AppState, inc: &Incident) -> Option<(
                         &state.pool,
                         &inc.id,
                         "autonomy_stopped",
-                        "watchtower",
+                        "picket",
                         &format!("Autonomous handling stopped: {reason}"),
                         json!({}),
                     )
@@ -659,7 +659,7 @@ pub struct AgentResult {
 const MAX_RESULT_BYTES: usize = 64 * 1024;
 
 /// The agent finished. A "fixed" outcome on a rule with recovery waits for
-/// Watchtower to observe recovery; the incident itself is never resolved
+/// Picket to observe recovery; the incident itself is never resolved
 /// on the agent's word.
 pub async fn complete(
     state: &AppState,
@@ -708,7 +708,7 @@ pub async fn complete(
     let head = match new_status {
         status::NEEDS_HUMAN => "🙋 Agent needs a human",
         status::AWAITING_VERIFICATION => {
-            "🛠 Agent reports a fix — waiting for Watchtower to observe recovery"
+            "🛠 Agent reports a fix — waiting for Picket to observe recovery"
         }
         _ if result.outcome == "fixed" => "🛠 Agent reports a fix",
         _ => "🔎 Agent finished its investigation",
@@ -894,7 +894,7 @@ pub async fn sweep(state: &AppState, now: i64) -> Result<(), sqlx::Error> {
                     pool,
                     &t.incident_id,
                     &t.id,
-                    "watchtower",
+                    "picket",
                     "Agent task cancelled: incident resolved",
                 )
                 .await;
@@ -905,7 +905,7 @@ pub async fn sweep(state: &AppState, now: i64) -> Result<(), sqlx::Error> {
                     t,
                     "runner lease expired (runner offline or crashed)",
                     true,
-                    "watchtower",
+                    "picket",
                 )
                 .await;
             }
@@ -926,7 +926,7 @@ pub async fn sweep(state: &AppState, now: i64) -> Result<(), sqlx::Error> {
                     "⚠️ Agent task waiting {} min: {why}",
                     (now - t.created_at) / 60_000
                 );
-                log_task(pool, &t.incident_id, &t.id, "watchtower", &notice).await;
+                log_task(pool, &t.incident_id, &t.id, "picket", &notice).await;
                 notify_moment(state, &t.incident_id, Moment::AgentFailed, &notice).await;
             }
             status::AWAITING_VERIFICATION => {
@@ -947,7 +947,7 @@ pub async fn sweep(state: &AppState, now: i64) -> Result<(), sqlx::Error> {
                         "❌ Agent's fix not verified: the problem was still observed {} min after it reported success",
                         (now - finished) / 60_000
                     );
-                    log_task(pool, &t.incident_id, &t.id, "watchtower", &notice).await;
+                    log_task(pool, &t.incident_id, &t.id, "picket", &notice).await;
                     notify_moment(state, &t.incident_id, Moment::AgentFailed, &notice).await;
                 }
             }
@@ -967,7 +967,7 @@ async fn mark_verified(state: &AppState, t: &TaskRow, why: &str) -> Result<(), s
         &state.pool,
         &t.incident_id,
         &t.id,
-        "watchtower",
+        "picket",
         &format!("Agent fix verified ({why})"),
     )
     .await;
@@ -1013,7 +1013,7 @@ async fn recovery_pass(state: &AppState, now: i64) -> Result<(), sqlx::Error> {
                 &state.pool,
                 &incident_id,
                 "incident",
-                "watchtower",
+                "picket",
                 &note,
                 json!({}),
             )

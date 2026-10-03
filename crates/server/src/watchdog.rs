@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
+use picket_common::{AgentEvent, EventKind, Evidence, Severity};
 use uuid::Uuid;
-use wt_common::{AgentEvent, EventKind, Evidence, Severity};
 
 use crate::app::AppState;
 
@@ -123,7 +123,7 @@ async fn watchdog_loop(state: AppState) {
 mod tests {
     use crate::app::AppState;
     use crate::hosts::upsert_host;
-    use wt_common::{EventKind, Severity};
+    use picket_common::{EventKind, Severity};
 
     use super::watchdog_scan;
 
@@ -131,7 +131,7 @@ mod tests {
     async fn missing_heartbeat_emits_event_once_per_episode() {
         let state = AppState::for_tests().await;
         let grace = state.cfg.watchdog_heartbeat_grace_secs.max(1) * 1000;
-        let hb = wt_common::Heartbeat {
+        let hb = picket_common::Heartbeat {
             host_id: "h-1".into(),
             ts: crate::ingest::now_ms(),
             version: "0.1".into(),
@@ -178,7 +178,7 @@ mod tests {
     #[tokio::test]
     async fn growing_queue_emits_throttled_warning() {
         let state = AppState::for_tests().await;
-        let hb = wt_common::Heartbeat {
+        let hb = picket_common::Heartbeat {
             host_id: "h-1".into(),
             ts: crate::ingest::now_ms(),
             version: "0.1".into(),
@@ -197,7 +197,7 @@ mod tests {
             "one event per queue episode while above threshold"
         );
         // queue drains below threshold → episode resets, nothing to emit
-        let hb = wt_common::Heartbeat {
+        let hb = picket_common::Heartbeat {
             host_id: "h-1".into(),
             ts: crate::ingest::now_ms(),
             version: "0.1".into(),
@@ -208,7 +208,7 @@ mod tests {
         let evs = watchdog_scan(&state, now).await.unwrap();
         assert!(evs.is_empty(), "below threshold: no event");
         // queue grows again → NEW episode → re-emits once
-        let hb = wt_common::Heartbeat {
+        let hb = picket_common::Heartbeat {
             host_id: "h-1".into(),
             ts: crate::ingest::now_ms(),
             version: "0.1".into(),

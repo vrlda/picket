@@ -1,14 +1,14 @@
-"""Watchtower SDK (stdlib only): exception capture and custom events.
+"""Picket SDK (stdlib only): exception capture and custom events.
 
 Report exceptions (grouped by fingerprint) and structured application/
-business events (e.g. "payment.request_failed") to a watchtower server;
+business events (e.g. "payment.request_failed") to a picket server;
 rules turn them into incidents. Configure via env:
 
-    WATCHTOWER_ENDPOINT     required, e.g. http://server:18788
-    WATCHTOWER_TOKEN        required, bearer token
-    WATCHTOWER_HOST_ID      default: socket hostname
-    WATCHTOWER_SERVICE      default: app
-    WATCHTOWER_ENVIRONMENT  default: prod
+    PICKET_ENDPOINT     required, e.g. http://server:18788
+    PICKET_TOKEN        required, bearer token
+    PICKET_HOST_ID      default: socket hostname
+    PICKET_SERVICE      default: app
+    PICKET_ENVIRONMENT  default: prod
 """
 
 import json
@@ -21,17 +21,19 @@ import urllib.request
 
 
 def _env(name, default=None):
-    return os.environ.get(name, default)
+    # pre-rename WATCHTOWER_* names still work as a fallback
+    legacy = name.replace("PICKET_", "WATCHTOWER_", 1)
+    return os.environ.get(name, os.environ.get(legacy, default))
 
 
 class Client:
     def __init__(self, endpoint=None, token=None, host_id=None,
                  service=None, environment=None):
-        self.endpoint = (endpoint or _env("WATCHTOWER_ENDPOINT", "")).rstrip("/")
-        self.token = token or _env("WATCHTOWER_TOKEN", "")
-        self.host_id = host_id or _env("WATCHTOWER_HOST_ID", socket.gethostname())
-        self.service = service or _env("WATCHTOWER_SERVICE", "app")
-        self.environment = environment or _env("WATCHTOWER_ENVIRONMENT", "prod")
+        self.endpoint = (endpoint or _env("PICKET_ENDPOINT", "")).rstrip("/")
+        self.token = token or _env("PICKET_TOKEN", "")
+        self.host_id = host_id or _env("PICKET_HOST_ID", socket.gethostname())
+        self.service = service or _env("PICKET_SERVICE", "app")
+        self.environment = environment or _env("PICKET_ENVIRONMENT", "prod")
 
     def capture(self, level, exception_type, message, frames=None):
         """frames: list of (file, line, function). Best-effort, one retry."""

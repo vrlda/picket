@@ -83,7 +83,7 @@ async fn state() -> AppState {
     s
 }
 
-fn failure(id: &str, ts: i64, merchant: &str) -> wt_common::AgentEvent {
+fn failure(id: &str, ts: i64, merchant: &str) -> picket_common::AgentEvent {
     crate::custom_events::build_event(
         serde_json::from_value(json!({
             "id": id,
@@ -104,7 +104,7 @@ fn failure(id: &str, ts: i64, merchant: &str) -> wt_common::AgentEvent {
     .unwrap()
 }
 
-async fn store(s: &AppState, evs: &[wt_common::AgentEvent]) {
+async fn store(s: &AppState, evs: &[picket_common::AgentEvent]) {
     crate::ingest::store_events(&s.pool, evs).await.unwrap();
 }
 
@@ -186,7 +186,7 @@ async fn threshold_groups_by_merchant_and_absorbs() {
     assert_eq!(b.timeline.len(), 6);
     // an unrelated custom kind joins nothing
     let mut other = failure("x1", *T0 + 41_000, "mer_a");
-    other.kind = wt_common::EventType::parse("checkout.completed").unwrap();
+    other.kind = picket_common::EventType::parse("checkout.completed").unwrap();
     store(&s, &[other]).await;
     assert!(scan(&s, *T0 + 42_000).await.is_empty());
 }
@@ -676,26 +676,31 @@ async fn auto_agent_takes_built_in_incidents() {
         profile: "ops".into(),
         ..Default::default()
     };
-    let host_event = |id: &str, host: &str, sev: wt_common::Severity| wt_common::AgentEvent {
-        id: id.into(),
-        ts: *T0,
-        host_id: host.into(),
-        key: format!("svc:{id}"),
-        kind: wt_common::EventKind::ServiceFailed.into(),
-        severity: sev,
-        summary: "nginx.service failed".into(),
-        ..Default::default()
-    };
+    let host_event =
+        |id: &str, host: &str, sev: picket_common::Severity| picket_common::AgentEvent {
+            id: id.into(),
+            ts: *T0,
+            host_id: host.into(),
+            key: format!("svc:{id}"),
+            kind: picket_common::EventKind::ServiceFailed.into(),
+            severity: sev,
+            summary: "nginx.service failed".into(),
+            ..Default::default()
+        };
     // below min_severity (Warning): no agent
     assert_eq!(s.cfg.auto_agent.profile_for("Info"), None);
     assert_eq!(s.cfg.auto_agent.profile_for("Warning"), Some("ops"));
-    store(&s, &[host_event("i1", "web-2", wt_common::Severity::Info)]).await;
+    store(
+        &s,
+        &[host_event("i1", "web-2", picket_common::Severity::Info)],
+    )
+    .await;
     scan(&s, *T0 + 1000).await;
     assert_eq!(task_count(&s).await, 0);
     // a critical service failure on a host goes to the auto profile
     store(
         &s,
-        &[host_event("c1", "web-1", wt_common::Severity::Critical)],
+        &[host_event("c1", "web-1", picket_common::Severity::Critical)],
     )
     .await;
     let changed = scan(&s, *T0 + 2000).await;

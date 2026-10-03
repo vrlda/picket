@@ -1,6 +1,6 @@
 use std::path::{Path, PathBuf};
 
-use wt_common::{AgentEvent, EventKind, Evidence, Severity};
+use picket_common::{AgentEvent, EventKind, Evidence, Severity};
 
 /// One watched file. The PARENT directory is watched so atomic-replace
 /// (rename over) edits are caught; events are filtered by filename.
@@ -89,7 +89,7 @@ pub fn mask_name(flags: u32) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use wt_common::{EventKind, Severity};
+    use picket_common::{EventKind, Severity};
 
     #[test]
     fn relevant_matches_only_target_filename() {

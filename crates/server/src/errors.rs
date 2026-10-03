@@ -5,7 +5,7 @@ use axum::body::Body;
 use axum::extract::{Request, State};
 use axum::http::StatusCode;
 use axum::response::Response;
-use wt_common::{AgentEvent, EventKind, Evidence, Severity};
+use picket_common::{AgentEvent, EventKind, Evidence, Severity};
 
 /// Max accepted error-payload size (1 MiB — exceptions carry stack traces,
 /// not payloads).
@@ -206,7 +206,7 @@ pub async fn handle_errors(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use wt_common::Severity;
+    use picket_common::Severity;
 
     use crate::app::{build_app, AppState};
 

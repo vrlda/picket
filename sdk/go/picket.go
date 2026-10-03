@@ -1,10 +1,10 @@
-// Package watchtower is a minimal SDK: apps report exceptions (grouped by
-// fingerprint) and custom application/business events to a watchtower
+// Package picket is a minimal SDK: apps report exceptions (grouped by
+// fingerprint) and custom application/business events to a picket
 // server, whose rules turn them into incidents.
 //
-// Env: WATCHTOWER_ENDPOINT (required), WATCHTOWER_TOKEN (required),
-// WATCHTOWER_HOST_ID, WATCHTOWER_SERVICE, WATCHTOWER_ENVIRONMENT.
-package watchtower
+// Env: PICKET_ENDPOINT (required), PICKET_TOKEN (required),
+// PICKET_HOST_ID, PICKET_SERVICE, PICKET_ENVIRONMENT.
+package picket
 
 import (
 	"bytes"
@@ -22,7 +22,7 @@ type Frame struct {
 	Function string `json:"function"`
 }
 
-// Client reports exceptions to the watchtower server.
+// Client reports exceptions to the picket server.
 type Client struct {
 	Endpoint    string
 	Token       string
@@ -36,16 +36,20 @@ type Client struct {
 func New() *Client {
 	host, _ := os.Hostname()
 	return &Client{
-		Endpoint:    strings.TrimRight(os.Getenv("WATCHTOWER_ENDPOINT"), "/"),
-		Token:       os.Getenv("WATCHTOWER_TOKEN"),
-		HostID:      envOr("WATCHTOWER_HOST_ID", host),
-		Service:     envOr("WATCHTOWER_SERVICE", "app"),
-		Environment: envOr("WATCHTOWER_ENVIRONMENT", "prod"),
+		Endpoint:    strings.TrimRight(envOr("PICKET_ENDPOINT", ""), "/"),
+		Token:       envOr("PICKET_TOKEN", ""),
+		HostID:      envOr("PICKET_HOST_ID", host),
+		Service:     envOr("PICKET_SERVICE", "app"),
+		Environment: envOr("PICKET_ENVIRONMENT", "prod"),
 	}
 }
 
 func envOr(name, dflt string) string {
 	if v := os.Getenv(name); v != "" {
+		return v
+	}
+	// pre-rename WATCHTOWER_* names still work as a fallback
+	if v := os.Getenv(strings.Replace(name, "PICKET_", "WATCHTOWER_", 1)); v != "" {
 		return v
 	}
 	return dflt

@@ -1,9 +1,9 @@
 ---
-name: install-watchtower
-description: Install Watchtower end to end on the user's servers over SSH — control plane, agents, HTTPS, Telegram, and the Claude Code runner on this machine — with no manual steps. Use when the user asks to install, set up or deploy Watchtower on one or more servers.
+name: install-picket
+description: Install Picket end to end on the user's servers over SSH — control plane, agents, HTTPS, Telegram, and the Claude Code runner on this machine — with no manual steps. Use when the user asks to install, set up or deploy Picket on one or more servers.
 ---
 
-# Install Watchtower
+# Install Picket
 
 The user names servers and roles, e.g. "install it on root@1.2.3.4 as server
 and agent, and on deploy@5.6.7.8 as an agent". You do everything else. The
@@ -11,10 +11,10 @@ only thing you may need from them is a Telegram bot token (step 0).
 
 Layout you are building:
 
-- **server host**: `watchtower-server` behind Caddy (automatic HTTPS), plus
-  `watchtower-agent` monitoring the host itself.
-- **agent hosts**: `watchtower-agent`, reporting to the server over HTTPS.
-- **this machine** (where you, Claude Code, run): `watchtower-runner`. It
+- **server host**: `picket-server` behind Caddy (automatic HTTPS), plus
+  `picket-agent` monitoring the host itself.
+- **agent hosts**: `picket-agent`, reporting to the server over HTTPS.
+- **this machine** (where you, Claude Code, run): `picket-runner`. It
   takes incidents from the server and runs `claude` headless with SSH access
   to every host, so incidents get fixed autonomously.
 
@@ -64,9 +64,9 @@ ssh <server> 'sudo bash /tmp/install-server.sh --with-agent --host-id <its host 
   [--telegram-token <token> --telegram-chat-id <chat id>] [--domain <domain>]'
 ```
 
-The last lines of output are `WATCHTOWER_URL`, `WATCHTOWER_AUTH_TOKEN`,
-`WATCHTOWER_RUNNER_ID` and `WATCHTOWER_RUNNER_TOKEN`. They are also kept in
-`/etc/watchtower/install.env`, readable by root only. Treat them as secrets:
+The last lines of output are `PICKET_URL`, `PICKET_AUTH_TOKEN`,
+`PICKET_RUNNER_ID` and `PICKET_RUNNER_TOKEN`. They are also kept in
+`/etc/picket/install.env`, readable by root only. Treat them as secrets:
 don't echo them back to the user.
 
 - Exit code 2 means ports 80/443 are already taken by another web server.
@@ -81,33 +81,33 @@ don't echo them back to the user.
 
 ```bash
 scp scripts/install.sh <host>:/tmp/
-ssh <host> 'sudo bash /tmp/install.sh --server-url <WATCHTOWER_URL> --token <WATCHTOWER_AUTH_TOKEN> --host-id <its host id>'
+ssh <host> 'sudo bash /tmp/install.sh --server-url <PICKET_URL> --token <PICKET_AUTH_TOKEN> --host-id <its host id>'
 ```
 
 ## 4. Runner (this machine)
 
 ```bash
-bash scripts/install-runner.sh --server-url <WATCHTOWER_URL> \
-  --runner-id <WATCHTOWER_RUNNER_ID> --token <WATCHTOWER_RUNNER_TOKEN> \
+bash scripts/install-runner.sh --server-url <PICKET_URL> \
+  --runner-id <PICKET_RUNNER_ID> --token <PICKET_RUNNER_TOKEN> \
   --host <server host id>=<its ssh dest> \
   --host <each agent host id>=<its ssh dest>
 ```
 
 Use the same SSH destinations you used above. The script runs
-`watchtower-runner check` first: Claude CLI found, every host reachable over
+`picket-runner check` first: Claude CLI found, every host reachable over
 SSH, server connection OK. It installs the service only if the check passes.
 
 ## 5. Verify, then report
 
 ```bash
-curl -fsS -H "Authorization: Bearer <WATCHTOWER_AUTH_TOKEN>" <WATCHTOWER_URL>/v1/hosts
+curl -fsS -H "Authorization: Bearer <PICKET_AUTH_TOKEN>" <PICKET_URL>/v1/hosts
 ```
 
 Every host should be listed with a recent `last_seen`. Agents heartbeat
 every 30s, so wait up to a minute. The runner log should say
 `<runner id> connected to <url>`. On macOS the log is
-`~/Library/Logs/watchtower-runner.log`; on Linux use
-`journalctl --user -u watchtower-runner`.
+`~/Library/Logs/picket-runner.log`; on Linux use
+`journalctl --user -u picket-runner`.
 
 Tell the user, briefly:
 
@@ -122,7 +122,7 @@ Tell the user, briefly:
 
 - **Add a host**: run step 3 on it, then re-run step 4 with the extra `--host`.
 - **Read-only Claude**: set `production = "diagnose"` in
-  `~/.watchtower-runner/runner.toml` under `[profiles.ops]`, then restart the
+  `~/.picket-runner/runner.toml` under `[profiles.ops]`, then restart the
   runner.
 - **No autonomous response**: remove `[auto_agent]` from
-  `/etc/watchtower/server.toml` and restart `watchtower-server`.
+  `/etc/picket/server.toml` and restart `picket-server`.
