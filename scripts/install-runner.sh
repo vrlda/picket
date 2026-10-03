@@ -8,7 +8,7 @@
 #     --host <host id>=<ssh destination> [--host ...] [--model <model>]
 #
 # --host maps a Watchtower host id (what the server shows) to how this
-# machine reaches it over ssh, e.g. --host 3f9c...=root@203.0.113.10.
+# machine reaches it over ssh, e.g. --host web-1=root@203.0.113.10.
 # The agent gets SSH access to those hosts and may fix them (profile "ops",
 # production = "remediate"). Every host must accept key-based ssh
 # non-interactively; the install fails otherwise.

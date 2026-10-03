@@ -38,14 +38,19 @@ step fails, fix the cause and run it again.
 ## 1. Preflight (every host)
 
 ```bash
-ssh -o BatchMode=yes <dest> 'id -u; sudo -n true && echo sudo-ok; uname -m; systemctl --version | head -1; cat /etc/machine-id'
+ssh -o BatchMode=yes <dest> 'id -u; sudo -n true && echo sudo-ok; uname -m; systemctl --version | head -1; hostname -s'
 ```
 
 You need key-based SSH, root or passwordless sudo, systemd, and x86_64 or
-aarch64. **Record each host's `/etc/machine-id`: it is the host id
-Watchtower uses** (in alerts, and in the runner's `--host` mapping). If a
-check fails, tell the user exactly what is missing. Don't work around
-missing access.
+aarch64. If a check fails, tell the user exactly what is missing. Don't work
+around missing access.
+
+**Pick a host id for each host:** its short hostname, unless it's
+meaningless (e.g. `ubuntu`, `localhost`, a cloud default like
+`ip-10-0-0-5`) or two hosts share it. In that case use a name from the
+user's words ("web", "db") or the IP with dashes. The host id is how the host
+appears in alerts, and it's what the runner's `--host` maps to an SSH
+destination, so use the same id everywhere below.
 
 On this machine: `claude --version` must work and you must be logged in.
 The runner also needs this machine to stay on: say so if it's a laptop.
@@ -54,7 +59,7 @@ The runner also needs this machine to stay on: say so if it's a laptop.
 
 ```bash
 scp scripts/install-server.sh scripts/install.sh <server>:/tmp/
-ssh <server> 'sudo bash /tmp/install-server.sh --with-agent \
+ssh <server> 'sudo bash /tmp/install-server.sh --with-agent --host-id <its host id> \
   --runner-id <short name of this machine, e.g. home-mac> \
   [--telegram-token <token> --telegram-chat-id <chat id>] [--domain <domain>]'
 ```
@@ -76,7 +81,7 @@ don't echo them back to the user.
 
 ```bash
 scp scripts/install.sh <host>:/tmp/
-ssh <host> 'sudo bash /tmp/install.sh --server-url <WATCHTOWER_URL> --token <WATCHTOWER_AUTH_TOKEN>'
+ssh <host> 'sudo bash /tmp/install.sh --server-url <WATCHTOWER_URL> --token <WATCHTOWER_AUTH_TOKEN> --host-id <its host id>'
 ```
 
 ## 4. Runner (this machine)
@@ -84,8 +89,8 @@ ssh <host> 'sudo bash /tmp/install.sh --server-url <WATCHTOWER_URL> --token <WAT
 ```bash
 bash scripts/install-runner.sh --server-url <WATCHTOWER_URL> \
   --runner-id <WATCHTOWER_RUNNER_ID> --token <WATCHTOWER_RUNNER_TOKEN> \
-  --host <machine-id of server host>=<its ssh dest> \
-  --host <machine-id of each agent host>=<its ssh dest>
+  --host <server host id>=<its ssh dest> \
+  --host <each agent host id>=<its ssh dest>
 ```
 
 Use the same SSH destinations you used above. The script runs
