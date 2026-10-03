@@ -1,9 +1,9 @@
 //! M4 acceptance: the product-spec §7 demo scenario produces exactly ONE
 //! correlated incident with a full timeline, and the lifecycle works.
-use watchtower_server::app::AppState;
-use watchtower_server::correlation::{default_rules, scan_and_absorb};
-use watchtower_server::incidents::{self, IncidentStatus};
-use wt_common::{AgentEvent, EventKind, Severity};
+use picket_common::{AgentEvent, EventKind, Severity};
+use picket_server::app::AppState;
+use picket_server::correlation::{default_rules, scan_and_absorb};
+use picket_server::incidents::{self, IncidentStatus};
 
 fn ev(id: &str, ts: i64, kind: EventKind, sev: Severity, key: &str) -> AgentEvent {
     AgentEvent {
@@ -99,7 +99,7 @@ fn demo_sequence() -> Vec<AgentEvent> {
 #[tokio::test]
 async fn demo_produces_one_incident_with_full_timeline() {
     let state = AppState::for_tests().await;
-    watchtower_server::ingest::store_events(&state.pool, &demo_sequence())
+    picket_server::ingest::store_events(&state.pool, &demo_sequence())
         .await
         .unwrap();
     let rules = default_rules();
@@ -134,7 +134,7 @@ async fn demo_produces_one_incident_with_full_timeline() {
     assert_eq!(inc.timeline[0].id, "e-unreach", "timeline ordered ts desc");
 
     // the webhook payload carries the full anatomy
-    let json = watchtower_server::api_incidents::incident_json(inc);
+    let json = picket_server::api_incidents::incident_json(inc);
     assert!(json["cause"]
         .as_str()
         .unwrap()
@@ -183,7 +183,7 @@ async fn demo_produces_one_incident_with_full_timeline() {
     // batch re-triggers the rule and opens a NEW incident with the same key
     // (dedup is keyed on OPEN incidents only; the resolution is long gone)
     let batch_base = 1_000_000_599_000; // inside the 300s scan window at 600_011
-    watchtower_server::ingest::store_events(&state.pool, &fresh_sequence(batch_base))
+    picket_server::ingest::store_events(&state.pool, &fresh_sequence(batch_base))
         .await
         .unwrap();
     let changed = scan_and_absorb(&state.pool, &rules, 1_000_000_600_011)

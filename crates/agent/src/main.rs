@@ -14,15 +14,15 @@ use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use clap::{Parser, Subcommand};
-use wt_common::{Config, Heartbeat};
+use picket_common::{Config, Heartbeat};
 
 #[derive(Parser)]
-#[command(name = "watchtower-agent", version)]
+#[command(name = "picket-agent", version)]
 struct Cli {
     #[command(subcommand)]
     cmd: Cmd,
     /// Path to config file.
-    #[arg(long, default_value = "/etc/watchtower/agent.toml")]
+    #[arg(long, default_value = "/etc/picket/agent.toml")]
     config: PathBuf,
 }
 

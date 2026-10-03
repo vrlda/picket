@@ -1,6 +1,6 @@
 # Contributing
 
-Watchtower is built plan-first: every milestone ships with a task-by-task
+Picket is built plan-first: every milestone ships with a task-by-task
 TDD plan under `docs/superpowers/plans/` before code lands.
 
 ## Workflow

@@ -1,4 +1,4 @@
-"""Self-test: run with `python3 sdk/python/test_watchtower.py` (stdlib)."""
+"""Self-test: run with `python3 sdk/python/test_picket.py` (stdlib)."""
 
 import http.server
 import json
@@ -7,7 +7,7 @@ import threading
 import unittest
 
 sys.path.insert(0, __file__.rsplit("/", 1)[0])
-import watchtower
+import picket
 
 
 class Handler(http.server.BaseHTTPRequestHandler):
@@ -36,7 +36,7 @@ class TestSdk(unittest.TestCase):
         self.server.shutdown()
 
     def test_capture_payload(self):
-        c = watchtower.Client(endpoint="http://127.0.0.1:%d" % self.port,
+        c = picket.Client(endpoint="http://127.0.0.1:%d" % self.port,
                               token="tok", host_id="h-1", service="api")
         ok = c.capture("error", "ValueError", "bad input",
                        [("app.py", 42, "validate")])
@@ -51,7 +51,7 @@ class TestSdk(unittest.TestCase):
         self.assertEqual(b["exception"]["frames"][0]["line"], 42)
 
     def test_capture_exception_current(self):
-        c = watchtower.Client(endpoint="http://127.0.0.1:%d" % self.port, token="tok")
+        c = picket.Client(endpoint="http://127.0.0.1:%d" % self.port, token="tok")
         try:
             raise ValueError("boom")
         except ValueError:
@@ -63,7 +63,7 @@ class TestSdk(unittest.TestCase):
         self.assertGreater(len(b["exception"]["frames"]), 0)
 
     def test_capture_event_payload(self):
-        c = watchtower.Client(endpoint="http://127.0.0.1:%d" % self.port,
+        c = picket.Client(endpoint="http://127.0.0.1:%d" % self.port,
                               token="tok", service="payment-api", environment="production")
         ok = c.capture_event("payment.request_failed", "Payment request failed",
                              severity="warning", subject="merchant:mer_1",
@@ -81,7 +81,7 @@ class TestSdk(unittest.TestCase):
         self.assertNotIn("id", b)
 
     def test_no_config_no_crash(self):
-        c = watchtower.Client()
+        c = picket.Client()
         self.assertFalse(c.capture("error", "T", "m"))
         self.assertFalse(c.capture_exception())
         self.assertFalse(c.capture_event("a.b", "x"))

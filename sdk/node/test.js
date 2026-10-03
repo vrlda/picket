@@ -2,7 +2,7 @@
 const test = require("node:test");
 const assert = require("node:assert");
 const http = require("http");
-const { Client } = require("./watchtower");
+const { Client } = require("./picket");
 
 function withServer(fn) {
   return new Promise((resolve, reject) => {

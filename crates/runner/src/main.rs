@@ -1,19 +1,19 @@
 use std::path::PathBuf;
 
 use clap::{Parser, Subcommand};
-use watchtower_runner::config::RunnerConfig;
+use picket_runner::config::RunnerConfig;
 
 #[derive(Parser)]
 #[command(
-    name = "watchtower-runner",
+    name = "picket-runner",
     version,
-    about = "Runs Watchtower agent tasks (outbound HTTPS only)"
+    about = "Runs Picket agent tasks (outbound HTTPS only)"
 )]
 struct Cli {
     #[command(subcommand)]
     cmd: Cmd,
     /// Path to the runner config.
-    #[arg(long, default_value = "/etc/watchtower/runner.toml")]
+    #[arg(long, default_value = "/etc/picket/runner.toml")]
     config: PathBuf,
 }
 
@@ -36,7 +36,7 @@ fn main() {
         }
     };
     match cli.cmd {
-        Cmd::Run => watchtower_runner::run_forever(&cfg),
+        Cmd::Run => picket_runner::run_forever(&cfg),
         Cmd::Check => {
             let mut ok = true;
             let mark = |good: bool| if good { "✓" } else { "✗" };
@@ -105,7 +105,7 @@ fn main() {
                 );
                 ok &= reached;
             }
-            let client = watchtower_runner::Client::new(&cfg);
+            let client = picket_runner::Client::new(&cfg);
             let caps: Vec<String> = cfg.profiles.keys().cloned().collect();
             match client.register(&cfg.labels, &caps) {
                 Ok(()) => println!("✓ connected to {} as {}", cfg.server_url, cfg.runner_id),

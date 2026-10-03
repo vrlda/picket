@@ -1,6 +1,6 @@
-# Watchtower
+# Picket
 
-[![CI](https://github.com/vrlda/watchtower/actions/workflows/ci.yml/badge.svg)](https://github.com/vrlda/watchtower/actions/workflows/ci.yml)
+[![CI](https://github.com/vrlda/picket/actions/workflows/ci.yml/badge.svg)](https://github.com/vrlda/picket/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
 Production server and application autopilot. A small agent watches the health and security of your servers, your apps send exceptions and custom business events, and a control plane correlates it all into incidents — then tells a human, or hands the incident to a coding agent (Claude Code) on an always-on machine and verifies the fix from production telemetry. No per-seat pricing, no cloud dependency — it runs on your own box or VPS.
@@ -19,17 +19,17 @@ Production server and application autopilot. A small agent watches the health an
 
 ## How it works
 
-- **Agent** (`watchtower-agent`) — a single binary per host. Polls systemd/journald/procfs, batches events, POSTs them to the control plane. JSONL disk spool with ack-based drain survives server outages; state (seen IPs, journal cursor, baselines) persists across restarts.
-- **Server** (`watchtower-server`) — ingests events, runs rule-based correlation, groups them into **incidents**, and notifies. SQLite by default, Postgres supported. Headless — no web UI: you get alerted, and you acknowledge/resolve straight from the Telegram alert. An incident absorbs follow-up events (one timeline per problem) with a re-notify throttle.
+- **Agent** (`picket-agent`) — a single binary per host. Polls systemd/journald/procfs, batches events, POSTs them to the control plane. JSONL disk spool with ack-based drain survives server outages; state (seen IPs, journal cursor, baselines) persists across restarts.
+- **Server** (`picket-server`) — ingests events, runs rule-based correlation, groups them into **incidents**, and notifies. SQLite by default, Postgres supported. Headless — no web UI: you get alerted, and you acknowledge/resolve straight from the Telegram alert. An incident absorbs follow-up events (one timeline per problem) with a re-notify throttle.
 - **Exception capture** — apps POST exceptions to `/v1/errors`; the server fingerprints them (type + service + first frames) and each recurring bug becomes one incident — same list, timeline, resolve and notify flow as infra events.
 - **Custom events** — apps POST structured events to `/v1/events`; threshold rules (count / window / group-by / conditions) turn them into incidents, e.g. "10 payment failures for merchant mer_123 in 2 minutes" or "conversion below 70% on ≥100 attempts".
-- **Runner** (`watchtower-runner`, optional) — runs on an always-on Mac or workstation, connects **outbound only** (works behind NAT), takes agent tasks for incidents and runs Claude Code on them: **over SSH on the affected host** (restart a dead service, free a full disk, revert a bad config) and/or in an isolated git worktree of your code. It reports a structured result. Watchtower resolves the incident only once it **observes recovery** — an agent saying "fixed" is not proof.
+- **Runner** (`picket-runner`, optional) — runs on an always-on Mac or workstation, connects **outbound only** (works behind NAT), takes agent tasks for incidents and runs Claude Code on them: **over SSH on the affected host** (restart a dead service, free a full disk, revert a bad config) and/or in an isolated git worktree of your code. It reports a structured result. Picket resolves the incident only once it **observes recovery** — an agent saying "fixed" is not proof.
 
 ```
 events (hosts, exceptions, apps) → rules → incident → notify (Telegram/Slack/webhook)
                                                      → agent task → runner → Claude Code → fix
                                                                     ↑                        ↓
-                                        Watchtower verifies recovery ← production telemetry
+                                        Picket verifies recovery ← production telemetry
 ```
 
 ## Quick start
@@ -38,26 +38,26 @@ events (hosts, exceptions, apps) → rules → incident → notify (Telegram/Sla
 cargo build --release
 
 # agent, one-shot diagnostics on this host:
-./target/release/watchtower-agent check
+./target/release/picket-agent check
 
 # control plane (server.toml: listen, db_url, auth_token, [[probes]]):
-./target/release/watchtower-server --config /etc/watchtower/server.toml
+./target/release/picket-server --config /etc/picket/server.toml
 ```
 
 ## Install with Claude Code (hands-off)
 
 Open this repository in Claude Code on the machine that should run the agent (e.g. your Mac, with SSH access to the servers) and say:
 
-> Install Watchtower on root@203.0.113.10 as server and agent, and on deploy@198.51.100.7 as an agent.
+> Install Picket on root@203.0.113.10 as server and agent, and on deploy@198.51.100.7 as an agent.
 
-Claude follows [`.claude/skills/install-watchtower/SKILL.md`](.claude/skills/install-watchtower/SKILL.md): control plane with automatic HTTPS (Caddy; `<ip>.sslip.io` if you have no domain), agents on every host, Telegram, and `watchtower-runner` on your machine with SSH access to all hosts — then verifies every piece. The only thing it asks you for is a Telegram bot token. The scripts it uses work on their own too: [`scripts/install-server.sh`](scripts/install-server.sh), [`scripts/install.sh`](scripts/install.sh) (agent), [`scripts/install-runner.sh`](scripts/install-runner.sh) (macOS/Linux).
+Claude follows [`.claude/skills/install-picket/SKILL.md`](.claude/skills/install-picket/SKILL.md): control plane with automatic HTTPS (Caddy; `<ip>.sslip.io` if you have no domain), agents on every host, Telegram, and `picket-runner` on your machine with SSH access to all hosts — then verifies every piece. The only thing it asks you for is a Telegram bot token. The scripts it uses work on their own too: [`scripts/install-server.sh`](scripts/install-server.sh), [`scripts/install.sh`](scripts/install.sh) (agent), [`scripts/install-runner.sh`](scripts/install-runner.sh) (macOS/Linux).
 
 ## Install (Linux)
 
 One command (fetches the latest release, verifies the checksum, installs):
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/vrlda/watchtower/main/scripts/install.sh \
+curl -fsSL https://raw.githubusercontent.com/vrlda/picket/main/scripts/install.sh \
   | sudo bash -s -- --server-url https://control.example.com --token secret
 ```
 
@@ -72,7 +72,7 @@ Pin a version (the tarball URL pattern is `<release>/download/<tag>/`; tarballs 
 named after the crate version, not the tag):
 
 ```bash
-INSTALL_URL=https://github.com/vrlda/watchtower/releases/download/v0.5.0/watchtower-0.5.0-x86_64-unknown-linux-musl.tar.gz \
+INSTALL_URL=https://github.com/vrlda/picket/releases/download/v0.6.0/picket-0.6.0-x86_64-unknown-linux-musl.tar.gz \
   INSTALL_SHA256=<hash from SHA256SUMS> \
   SERVER_URL=https://control.example.com TOKEN=secret \
   sudo bash scripts/install.sh
@@ -81,12 +81,12 @@ INSTALL_URL=https://github.com/vrlda/watchtower/releases/download/v0.5.0/watchto
 From a local build:
 
 ```bash
-WATCHTOWER_BINARY=target/release/watchtower-agent \
+PICKET_BINARY=target/release/picket-agent \
   SERVER_URL=https://control.example.com TOKEN=secret \
   sudo bash scripts/install.sh
 ```
 
-The agent runs as a dedicated `watchtower` user, `NoNewPrivileges=yes`, no capabilities.
+The agent runs as a dedicated `picket` user, `NoNewPrivileges=yes`, no capabilities.
 Remote control planes must use HTTPS (terminate TLS at a reverse proxy if needed). The
 installer permits plain HTTP only for loopback development addresses.
 
@@ -101,10 +101,10 @@ Telegram, Slack and generic webhook (routing editable in `server.toml` `[notify.
 
    ```bash
    # A) recommended — password handshake: send /start to your bot, then the password
-   TELEGRAM_BOT_TOKEN=<token> TELEGRAM_BOT_PASSWORD=<secret> watchtower-server --config server.toml
+   TELEGRAM_BOT_TOKEN=<token> TELEGRAM_BOT_PASSWORD=<secret> picket-server --config server.toml
 
    # B) pinned chat — no handshake at all
-   TELEGRAM_BOT_TOKEN=<token> TELEGRAM_CHAT_ID=<chat id> watchtower-server --config server.toml
+   TELEGRAM_BOT_TOKEN=<token> TELEGRAM_CHAT_ID=<chat id> picket-server --config server.toml
    ```
 
    With only `TELEGRAM_BOT_TOKEN`, the first chat that messages the bot becomes the target — convenient,
@@ -116,7 +116,7 @@ Telegram, Slack and generic webhook (routing editable in `server.toml` `[notify.
 To find a chat id for option B: message the bot, then open `https://api.telegram.org/bot<token>/getUpdates`
 and read `message.chat.id` (group ids are negative; add the bot to the group first).
 
-For a systemd install, put these variables in `/etc/watchtower/server.env` (the shipped unit reads it).
+For a systemd install, put these variables in `/etc/picket/server.env` (the shipped unit reads it).
 
 **Alerts and buttons.** Every alert carries **👀 Acknowledge** and **✅ Resolve** buttons. Pressing one updates
 the incident and edits the alert in place ("✅ Resolved by @alice at …"), so everyone in the chat sees who took
@@ -133,14 +133,14 @@ the accepted password message is deleted from the chat.
 
 ## SDKs: exceptions and custom events
 
-Zero-dependency, config via `WATCHTOWER_ENDPOINT` / `WATCHTOWER_TOKEN` / `WATCHTOWER_HOST_ID` / `WATCHTOWER_SERVICE` / `WATCHTOWER_ENVIRONMENT`:
+Zero-dependency, config via `PICKET_ENDPOINT` / `PICKET_TOKEN` / `PICKET_HOST_ID` / `PICKET_SERVICE` / `PICKET_ENVIRONMENT`:
 
 | Language | Location | Test |
 |---|---|---|
-| Rust | `crates/watchtower-sdk` | `cargo test -p watchtower-sdk` |
-| Python | `sdk/python/watchtower.py` | `python3 sdk/python/test_watchtower.py` |
-| Node | `sdk/node/watchtower.js` | `node --test sdk/node/test.js` |
-| Go | `sdk/go/watchtower.go` | `cd sdk/go && go test ./...` |
+| Rust | `crates/picket-sdk` | `cargo test -p picket-sdk` |
+| Python | `sdk/python/picket.py` | `python3 sdk/python/test_picket.py` |
+| Node | `sdk/node/picket.js` | `node --test sdk/node/test.js` |
+| Go | `sdk/go/picket.go` | `cd sdk/go && go test ./...` |
 
 Exceptions: `capture(...)`; Python's `capture_exception()` grabs the current exception; Rust adds `capture_panic()`. Levels: `fatal`/`error` → Critical, `warning` → Warning, `info`/`debug` → Info.
 
@@ -217,11 +217,11 @@ On the runner (`runner.toml`):
 [profiles.ops]            # no workspace: the agent works on the hosts
 production = "remediate"  # none | diagnose | remediate (default)
 
-[hosts."<host id>"]       # how to reach each Watchtower host; without an
+[hosts."<host id>"]       # how to reach each Picket host; without an
 ssh = "root@203.0.113.10" # entry the agent uses `ssh <host id>` (~/.ssh/config)
 ```
 
-The agent gets the incident's host (and the other configured hosts) with an `ssh` command line. With `remediate` it may restart/reload services and containers, free disk space, fix permissions, renew certificates, revert a recent config change and stop runaway processes — capturing state first and listing every state-changing command in its result. It never deletes application data or backups, runs migrations, reboots, or touches firewall/SSH/auth settings or packages: those come back to you as `needs_human` with the exact commands it would run. `production` applies to every profile, including the code profiles below (set `none` to keep a profile off the hosts); `watchtower-runner check` verifies non-interactive SSH to every `[hosts]` entry.
+The agent gets the incident's host (and the other configured hosts) with an `ssh` command line. With `remediate` it may restart/reload services and containers, free disk space, fix permissions, renew certificates, revert a recent config change and stop runaway processes — capturing state first and listing every state-changing command in its result. It never deletes application data or backups, runs migrations, reboots, or touches firewall/SSH/auth settings or packages: those come back to you as `needs_human` with the exact commands it would run. `production` applies to every profile, including the code profiles below (set `none` to keep a profile off the hosts); `picket-runner check` verifies non-interactive SSH to every `[hosts]` entry.
 
 **Per-rule dispatch, with code changes:**
 
@@ -255,13 +255,13 @@ policy = "on_agent_result"     # always | on_open | on_agent_start | on_agent_re
 
 Without `notify` actions a rule uses the severity routing; agent start/success notices stay quiet then, while failures, escalations and verified recovery always reach you.
 
-**2. Runner** (`runner.toml` on the machine with the code and the `claude` CLI). *How* the agent runs is configured here, never on the server — Watchtower can't make your machine run a command:
+**2. Runner** (`runner.toml` on the machine with the code and the `claude` CLI). *How* the agent runs is configured here, never on the server — Picket can't make your machine run a command:
 
 ```toml
-server_url = "https://watchtower.example.com"
+server_url = "https://picket.example.com"
 runner_id = "home-mac"
 token = "<same token>"
-work_dir = "/Users/dan/.watchtower-runner"   # worktrees + logs
+work_dir = "/Users/dan/.picket-runner"   # worktrees + logs
 
 [profiles.payment_api]
 adapter = "claude-code"         # or "command" with command = ["my-agent", ...] (prompt on stdin)
@@ -270,18 +270,18 @@ autonomy = "patch"              # investigate | patch | commit | deploy
 timeout_secs = 1800
 blocked_paths = ["src/ledger/**", "src/settlement/**", "migrations/**"]
 require_human_approval_paths = ["src/auth/**"]
-prompt_file = "/Users/dan/.watchtower-runner/payment-api.md"   # optional extra instructions
+prompt_file = "/Users/dan/.picket-runner/payment-api.md"   # optional extra instructions
 # allowed_tools = ["Read", "Grep", "Glob", "Edit", "Write", "Bash(cargo test:*)"]
 # model = "claude-opus-5-5"
 ```
 
 ```bash
-watchtower-runner --config runner.toml check   # workspaces, CLI, ssh to [hosts], server connection
-watchtower-runner --config runner.toml run      # or install deploy/com.watchtower.runner.plist (macOS) /
-                                                 # deploy/watchtower-runner.service (Linux)
+picket-runner --config runner.toml check   # workspaces, CLI, ssh to [hosts], server connection
+picket-runner --config runner.toml run      # or install deploy/com.picket.runner.plist (macOS) /
+                                                 # deploy/picket-runner.service (Linux)
 ```
 
-**What happens:** incident → durable task (one active task per incident) → the runner's long-poll claims it under a lease → Claude Code runs in a fresh git worktree on branch `watchtower/<task>` (your checkout is never touched) with the incident context → it classifies the problem (platform bug vs. client integration vs. invalid input vs. provider issue …), fixes within its autonomy, runs tests, and ends with a structured result → the runner checks the **actual** changes against the autonomy level and path rules (violations become a human escalation) → Watchtower records everything in the incident's activity log:
+**What happens:** incident → durable task (one active task per incident) → the runner's long-poll claims it under a lease → Claude Code runs in a fresh git worktree on branch `picket/<task>` (your checkout is never touched) with the incident context → it classifies the problem (platform bug vs. client integration vs. invalid input vs. provider issue …), fixes within its autonomy, runs tests, and ends with a structured result → the runner checks the **actual** changes against the autonomy level and path rules (violations become a human escalation) → Picket records everything in the incident's activity log:
 
 - `fixed` + `[rule.recovery]` → *awaiting verification*; the incident resolves only after the trigger stays quiet for the recovery window. A recurring failure resets the timer; no recovery within `verify_timeout_secs` → you're told the fix didn't verify.
 - `no_change` → diagnosis recorded (e.g. "merchant signs webhooks with the wrong secret").
@@ -313,7 +313,7 @@ Curl exception reference:
 
 ```bash
 curl -fsS -X POST http://SERVER:8787/v1/errors \
-  -H "Authorization: Bearer $WATCHTOWER_TOKEN" \
+  -H "Authorization: Bearer $PICKET_TOKEN" \
   -H "Content-Type: application/json" \
   -d '{"host_id":"web-1","service":"api","environment":"prod",
        "exception":{"type":"ValueError","message":"bad input","level":"error",
@@ -334,7 +334,7 @@ cargo clippy --workspace --all-targets -- -D warnings
 cargo fmt --all --check
 ./scripts/integration-test.sh        # end-to-end against a live server
 bash -n scripts/*.sh                 # shell syntax
-python3 sdk/python/test_watchtower.py && node --test sdk/node/test.js
+python3 sdk/python/test_picket.py && node --test sdk/node/test.js
 cd sdk/go && go test ./...
 ```
 

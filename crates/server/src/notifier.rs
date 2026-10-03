@@ -90,7 +90,7 @@ mod tests {
             "one incident delivered"
         );
         let req = log.lock().unwrap()[0].clone();
-        assert!(req.contains("watchtower.incident"));
+        assert!(req.contains("picket.incident"));
         task.abort();
     }
 

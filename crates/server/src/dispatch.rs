@@ -1,9 +1,9 @@
 //! Dispatch: what happens once an incident exists. Notifications (Telegram,
 //! Slack, webhook) and agent tasks are both dispatch actions.
 //!
-//! Agent tasks are durable rows in `agent_tasks`. Watchtower only queues
-//! them; an external `watchtower-runner` (outbound HTTPS long-poll) claims
-//! and executes them. Watchtower never runs agent code itself.
+//! Agent tasks are durable rows in `agent_tasks`. Picket only queues
+//! them; an external `picket-runner` (outbound HTTPS long-poll) claims
+//! and executes them. Picket never runs agent code itself.
 
 use serde::{Deserialize, Serialize};
 
@@ -142,7 +142,7 @@ impl AutoAgent {
 
 /// Server-side `[agent_profiles.<name>]`: routing and loop limits only.
 /// How the agent runs (adapter, workspace, prompt, allowed tools, blocked
-/// paths) is configured on the runner machine — Watchtower never sends
+/// paths) is configured on the runner machine — Picket never sends
 /// commands or paths to execute.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]

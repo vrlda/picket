@@ -148,7 +148,7 @@ pub async fn build_app(state: AppState) -> Router {
 }
 
 async fn ping() -> Json<serde_json::Value> {
-    Json(serde_json::json!({ "ok": true, "service": "watchtower-server" }))
+    Json(serde_json::json!({ "ok": true, "service": "picket-server" }))
 }
 
 #[cfg(test)]

@@ -151,7 +151,7 @@ impl Default for ServerConfig {
     fn default() -> Self {
         ServerConfig {
             listen: "127.0.0.1:8787".into(),
-            db_url: "sqlite:///var/lib/watchtower/watchtower.db".into(),
+            db_url: "sqlite:///var/lib/picket/picket.db".into(),
             auth_token: String::new(),
             host_tokens: HashMap::new(),
             probes: Vec::new(),
@@ -225,7 +225,7 @@ mod tests {
         let cfg: ServerConfig = toml::from_str(raw).unwrap();
         assert_eq!(cfg.listen, "0.0.0.0:9999");
         assert_eq!(cfg.auth_token, "tok");
-        assert!(cfg.db_url.contains("watchtower.db"));
+        assert!(cfg.db_url.contains("picket.db"));
     }
 
     #[test]

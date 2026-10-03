@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Watchtower control-plane installer (non-interactive, safe to re-run).
+# Picket control-plane installer (non-interactive, safe to re-run).
 #
 #   sudo bash scripts/install-server.sh [--with-agent [--host-id <name>]]
 #        [--domain <name> | --no-proxy --public-url <https://...>]
@@ -7,16 +7,16 @@
 #        [--runner-id <id>]
 #
 # What it does:
-#   - installs watchtower-server (+ agent, runner) from the latest release
+#   - installs picket-server (+ agent, runner) from the latest release
 #   - generates the auth token and a runner token, writes
-#     /etc/watchtower/server.toml with autonomous response on: every
+#     /etc/picket/server.toml with autonomous response on: every
 #     Warning/Critical incident becomes an agent task for profile "ops"
 #   - HTTPS: Caddy reverse proxy with an automatic certificate for --domain,
 #     or <public-ip>.sslip.io when no domain is given (no DNS work needed)
 #   - --with-agent: also monitors this host (agent talks to 127.0.0.1)
 #
 # Re-running keeps the existing config and secrets. The last lines of output
-# are KEY=VALUE pairs (also stored in /etc/watchtower/install.env, root only)
+# are KEY=VALUE pairs (also stored in /etc/picket/install.env, root only)
 # that agents and the runner need.
 set -euo pipefail
 
@@ -29,10 +29,10 @@ TG_TOKEN="${TELEGRAM_BOT_TOKEN:-}"
 TG_CHAT="${TELEGRAM_CHAT_ID:-}"
 RUNNER_ID="runner"
 LISTEN="127.0.0.1:8787"
-CONFIG_DIR="/etc/watchtower"
-DATA_DIR="/var/lib/watchtower"
+CONFIG_DIR="/etc/picket"
+DATA_DIR="/var/lib/picket"
 INSTALL_DIR="/usr/local/bin"
-REPO="vrlda/watchtower"
+REPO="vrlda/picket"
 
 need_value() { [ "$2" -ge 2 ] || { echo "$1 requires a value" >&2; exit 1; }; }
 while [ "$#" -gt 0 ]; do
@@ -73,7 +73,7 @@ WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
 
 # ---------- binaries ----------
-echo "==> downloading the latest Watchtower release ($TARGET)"
+echo "==> downloading the latest Picket release ($TARGET)"
 LATEST_JSON="$(curl -fsSL "https://api.github.com/repos/$REPO/releases/latest")"
 TAG="$(printf '%s' "$LATEST_JSON" | grep -o '"tag_name"[^,]*' | sed 's/.*"\([^"]*\)"$/\1/' | head -n 1)"
 ASSET_URL="$(printf '%s' "$LATEST_JSON" | grep -o '"browser_download_url": *"[^"]*'"$TARGET"'.tar.gz"' | sed 's/.*"\([^"]*\)"$/\1/' | head -n 1)"
@@ -84,25 +84,25 @@ EXPECTED="$(curl -fsSL "https://github.com/$REPO/releases/download/$TAG/SHA256SU
 [ "$(sha256_of "$WORK/$ASSET")" = "$EXPECTED" ] || { echo "checksum mismatch — aborting" >&2; exit 1; }
 mkdir -p "$WORK/bin"
 tar -xzf "$WORK/$ASSET" -C "$WORK/bin"
-for b in watchtower-server watchtower-agent watchtower-runner; do
+for b in picket-server picket-agent picket-runner; do
   install -m 0755 "$WORK/bin/$b" "$INSTALL_DIR/$b"
 done
 echo "installed $TAG"
 
 # ---------- user, config, secrets ----------
-if ! getent passwd watchtower >/dev/null 2>&1; then
-  useradd --system --no-create-home --shell /usr/sbin/nologin watchtower
+if ! getent passwd picket >/dev/null 2>&1; then
+  useradd --system --no-create-home --shell /usr/sbin/nologin picket
 fi
 mkdir -p "$CONFIG_DIR" "$DATA_DIR"
-chown watchtower:watchtower "$DATA_DIR"
+chown picket:picket "$DATA_DIR"
 
 if [ -f "$CONFIG_DIR/install.env" ]; then
   # shellcheck disable=SC1091
   . "$CONFIG_DIR/install.env"
 fi
-AUTH_TOKEN="${WATCHTOWER_AUTH_TOKEN:-$(gen_token)}"
-RUNNER_ID="${WATCHTOWER_RUNNER_ID:-$RUNNER_ID}"
-RUNNER_TOKEN="${WATCHTOWER_RUNNER_TOKEN:-$(gen_token)}"
+AUTH_TOKEN="${PICKET_AUTH_TOKEN:-$(gen_token)}"
+RUNNER_ID="${PICKET_RUNNER_ID:-$RUNNER_ID}"
+RUNNER_TOKEN="${PICKET_RUNNER_TOKEN:-$(gen_token)}"
 
 if [ -f "$CONFIG_DIR/server.toml" ]; then
   echo "==> keeping existing $CONFIG_DIR/server.toml"
@@ -112,7 +112,7 @@ else
 listen = "$LISTEN"
 auth_token = "$AUTH_TOKEN"
 
-# The machine that runs Claude Code (watchtower-runner) connects with this.
+# The machine that runs Claude Code (picket-runner) connects with this.
 [runners.$RUNNER_ID]
 token = "$RUNNER_TOKEN"
 
@@ -130,7 +130,7 @@ profile = "ops"
 min_severity = "Warning"
 EOF
 fi
-chown root:watchtower "$CONFIG_DIR/server.toml"
+chown root:picket "$CONFIG_DIR/server.toml"
 chmod 640 "$CONFIG_DIR/server.toml"
 
 touch "$CONFIG_DIR/server.env"
@@ -143,21 +143,21 @@ set_env() {
 }
 set_env TELEGRAM_BOT_TOKEN "$TG_TOKEN"
 set_env TELEGRAM_CHAT_ID "$TG_CHAT"
-chown root:watchtower "$CONFIG_DIR/server.env"
+chown root:picket "$CONFIG_DIR/server.env"
 chmod 640 "$CONFIG_DIR/server.env"
 
-echo "==> starting watchtower-server"
-install -m 0644 "$WORK/bin/watchtower-server.service" /etc/systemd/system/watchtower-server.service
+echo "==> starting picket-server"
+install -m 0644 "$WORK/bin/picket-server.service" /etc/systemd/system/picket-server.service
 systemctl daemon-reload
-systemctl enable watchtower-server >/dev/null
-systemctl restart watchtower-server
+systemctl enable picket-server >/dev/null
+systemctl restart picket-server
 for _ in $(seq 1 30); do
   curl -fsS "http://$LISTEN/v1/ping" >/dev/null 2>&1 && break
   sleep 1
 done
 curl -fsS "http://$LISTEN/v1/ping" >/dev/null || {
-  journalctl -u watchtower-server -n 30 --no-pager >&2
-  echo "watchtower-server did not come up" >&2
+  journalctl -u picket-server -n 30 --no-pager >&2
+  echo "picket-server did not come up" >&2
   exit 1
 }
 
@@ -169,7 +169,7 @@ if [ "$NO_PROXY" = 0 ]; then
     DOMAIN="$(printf '%s' "$IP" | tr . -).sslip.io"
   fi
   PUBLIC_URL="https://$DOMAIN"
-  if ! systemctl is-active --quiet watchtower-caddy \
+  if ! systemctl is-active --quiet picket-caddy \
     && ss -ltnH '( sport = :443 or sport = :80 )' 2>/dev/null | grep -q .; then
     echo "ports 80/443 are already in use by another web server." >&2
     echo "Add a reverse proxy from https://<your domain> to http://$LISTEN there," >&2
@@ -189,24 +189,24 @@ if [ "$NO_PROXY" = 0 ]; then
     tar -xzf "$WORK/$CADDY_TGZ" -C "$WORK" caddy
     install -m 0755 "$WORK/caddy" "$INSTALL_DIR/caddy"
   fi
-  mkdir -p /etc/watchtower-caddy /var/lib/watchtower-caddy
-  chown watchtower:watchtower /var/lib/watchtower-caddy
-  cat > /etc/watchtower-caddy/Caddyfile <<EOF
+  mkdir -p /etc/picket-caddy /var/lib/picket-caddy
+  chown picket:picket /var/lib/picket-caddy
+  cat > /etc/picket-caddy/Caddyfile <<EOF
 $DOMAIN {
 	reverse_proxy $LISTEN
 }
 EOF
-  cat > /etc/systemd/system/watchtower-caddy.service <<UNIT
+  cat > /etc/systemd/system/picket-caddy.service <<UNIT
 [Unit]
-Description=HTTPS for Watchtower (Caddy)
-After=network-online.target watchtower-server.service
+Description=HTTPS for Picket (Caddy)
+After=network-online.target picket-server.service
 Wants=network-online.target
 
 [Service]
-User=watchtower
-Group=watchtower
-Environment=HOME=/var/lib/watchtower-caddy XDG_DATA_HOME=/var/lib/watchtower-caddy XDG_CONFIG_HOME=/var/lib/watchtower-caddy
-ExecStart=$INSTALL_DIR/caddy run --config /etc/watchtower-caddy/Caddyfile --adapter caddyfile
+User=picket
+Group=picket
+Environment=HOME=/var/lib/picket-caddy XDG_DATA_HOME=/var/lib/picket-caddy XDG_CONFIG_HOME=/var/lib/picket-caddy
+ExecStart=$INSTALL_DIR/caddy run --config /etc/picket-caddy/Caddyfile --adapter caddyfile
 Restart=always
 RestartSec=5
 AmbientCapabilities=CAP_NET_BIND_SERVICE
@@ -215,7 +215,7 @@ NoNewPrivileges=yes
 ProtectSystem=strict
 ProtectHome=yes
 PrivateTmp=yes
-ReadWritePaths=/var/lib/watchtower-caddy
+ReadWritePaths=/var/lib/picket-caddy
 
 [Install]
 WantedBy=multi-user.target
@@ -227,25 +227,25 @@ UNIT
     firewall-cmd --permanent --add-service=http --add-service=https >/dev/null && firewall-cmd --reload >/dev/null
   fi
   systemctl daemon-reload
-  systemctl enable watchtower-caddy >/dev/null
-  systemctl restart watchtower-caddy
+  systemctl enable picket-caddy >/dev/null
+  systemctl restart picket-caddy
   echo "==> waiting for the certificate for $DOMAIN"
   for _ in $(seq 1 60); do
     curl -fsS "$PUBLIC_URL/v1/ping" >/dev/null 2>&1 && break
     sleep 2
   done
   curl -fsS "$PUBLIC_URL/v1/ping" >/dev/null || {
-    journalctl -u watchtower-caddy -n 30 --no-pager >&2
+    journalctl -u picket-caddy -n 30 --no-pager >&2
     echo "$PUBLIC_URL is not reachable — is port 80/443 open in the provider's firewall?" >&2
     exit 1
   }
 fi
 
 cat > "$CONFIG_DIR/install.env" <<EOF
-WATCHTOWER_URL=$PUBLIC_URL
-WATCHTOWER_AUTH_TOKEN=$AUTH_TOKEN
-WATCHTOWER_RUNNER_ID=$RUNNER_ID
-WATCHTOWER_RUNNER_TOKEN=$RUNNER_TOKEN
+PICKET_URL=$PUBLIC_URL
+PICKET_AUTH_TOKEN=$AUTH_TOKEN
+PICKET_RUNNER_ID=$RUNNER_ID
+PICKET_RUNNER_TOKEN=$RUNNER_TOKEN
 EOF
 chmod 600 "$CONFIG_DIR/install.env"
 
@@ -257,7 +257,7 @@ if [ "$WITH_AGENT" = 1 ]; then
     AGENT_SCRIPT="$WORK/install.sh"
     curl -fsSL "https://raw.githubusercontent.com/$REPO/main/scripts/install.sh" -o "$AGENT_SCRIPT"
   fi
-  WATCHTOWER_BINARY="$WORK/bin/watchtower-agent" bash "$AGENT_SCRIPT" \
+  PICKET_BINARY="$WORK/bin/picket-agent" bash "$AGENT_SCRIPT" \
     --server-url "http://$LISTEN" --token "$AUTH_TOKEN" ${HOST_ID:+--host-id "$HOST_ID"}
 fi
 

@@ -1,5 +1,5 @@
+use picket_common::{AgentEvent, EventKind, EventType, Severity};
 use serde::{Deserialize, Serialize};
-use wt_common::{AgentEvent, EventKind, EventType, Severity};
 
 /// One correlation rule.
 ///
@@ -821,7 +821,7 @@ async fn scan_loop(state: crate::app::AppState) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use wt_common::{AgentEvent, EventKind, Severity};
+    use picket_common::{AgentEvent, EventKind, Severity};
 
     fn ev(id: &str, ts: i64, kind: EventKind, sev: Severity, key: &str) -> AgentEvent {
         ev_host("h-1", id, ts, kind, sev, key)
@@ -1427,7 +1427,7 @@ actions = ["Review the change to the affected file", "Roll back the latest confi
         let failed = crate::notify::notify_incident(&cfg.notify, &json).await;
         assert!(failed.is_empty(), "delivery succeeded");
         let req = log.lock().unwrap()[0].clone();
-        assert!(req.contains("watchtower.incident"));
+        assert!(req.contains("picket.incident"));
         assert!(req.contains("myapp.service became unhealthy"));
     }
 

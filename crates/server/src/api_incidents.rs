@@ -247,7 +247,7 @@ mod tests {
     use crate::app::build_app;
     use crate::test_util::{call, get_ok as get_json};
     use axum::http::StatusCode;
-    use wt_common::{AgentEvent, EventKind, Severity};
+    use picket_common::{AgentEvent, EventKind, Severity};
 
     async fn seed_incident(state: &AppState) -> String {
         let evs = vec![

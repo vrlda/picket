@@ -2,8 +2,8 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use picket_common::{AgentEvent, EventKind, Evidence, Severity};
 use uuid::Uuid;
-use wt_common::{AgentEvent, EventKind, Evidence, Severity};
 
 use crate::app::AppState;
 

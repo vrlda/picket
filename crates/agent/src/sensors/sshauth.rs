@@ -1,7 +1,7 @@
 use std::collections::{HashMap, HashSet};
 
 use crate::journald::JournalLine;
-use wt_common::Severity;
+use picket_common::Severity;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum AuthKind {
@@ -224,7 +224,7 @@ impl SshEventBuilder {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use wt_common::Severity;
+    use picket_common::Severity;
 
     fn line(ts_ms: i64, ident: &str, msg: &str) -> JournalLine {
         JournalLine {

@@ -1,6 +1,6 @@
 [package]
-name = "watchtower-server"
-version = "0.5.0"
+name = "picket-server"
+version = "0.6.0"
 edition = "2021"
 
 [dependencies]
@@ -14,7 +14,7 @@ clap = { version = "4", features = ["derive"] }
 ureq = { version = "2", features = ["tls", "json"] }
 uuid = { version = "1", features = ["v4"] }
 sha2 = "0.10"
-wt-common = { path = "../wt-common" }
+picket-common = { path = "../picket-common" }
 
 [dev-dependencies]
 tower = { version = "0.5", features = ["util"] }

@@ -1,8 +1,8 @@
-//! watchtower-runner: takes agent tasks from Watchtower and runs a local
+//! picket-runner: takes agent tasks from Picket and runs a local
 //! coding agent on them.
 //!
 //! Connectivity is outbound HTTPS only (long-poll), so the runner works
-//! from behind NAT on a machine with no public address. Watchtower sends a
+//! from behind NAT on a machine with no public address. Picket sends a
 //! profile name and incident context — never commands or paths: how the
 //! agent runs is decided by this machine's config.
 
@@ -256,7 +256,7 @@ pub fn prepare_workspace(
         )
     })?;
     let name = sanitize(task_id);
-    let branch = format!("watchtower/{name}");
+    let branch = format!("picket/{name}");
     let dir = cfg.work_dir.join("worktrees").join(&name);
     std::fs::create_dir_all(dir.parent().unwrap()).map_err(|e| format!("work_dir: {e}"))?;
     if dir.exists() {
@@ -697,15 +697,15 @@ fn execute(
     }
     eprintln!("task {id}: running {agent_name} in {}", ws.dir.display());
     let mut env = vec![
-        ("WATCHTOWER_URL".to_string(), cfg.server_url.clone()),
-        ("WATCHTOWER_TASK_ID".to_string(), id.to_string()),
-        ("WATCHTOWER_TASK_TOKEN".to_string(), token.to_string()),
+        ("PICKET_URL".to_string(), cfg.server_url.clone()),
+        ("PICKET_TASK_ID".to_string(), id.to_string()),
+        ("PICKET_TASK_TOKEN".to_string(), token.to_string()),
         (
-            "WATCHTOWER_PROMPT_FILE".to_string(),
+            "PICKET_PROMPT_FILE".to_string(),
             prompt_path.display().to_string(),
         ),
         (
-            "WATCHTOWER_AUTONOMY".to_string(),
+            "PICKET_AUTONOMY".to_string(),
             format!("{:?}", profile.autonomy).to_lowercase(),
         ),
     ];
@@ -713,8 +713,14 @@ fn execute(
         .first()
         .filter(|_| profile.production != Production::None)
     {
-        env.push(("WATCHTOWER_SSH".to_string(), dest.clone()));
+        env.push(("PICKET_SSH".to_string(), dest.clone()));
     }
+    // pre-rename names, for command adapters written against them
+    let legacy: Vec<(String, String)> = env
+        .iter()
+        .map(|(k, v)| (k.replacen("PICKET_", "WATCHTOWER_", 1), v.clone()))
+        .collect();
+    env.extend(legacy);
     let argv = adapter_argv(profile, &prompt);
     let stdin = (profile.adapter == "command").then_some(prompt.as_str());
     let run = run_process(
@@ -815,7 +821,7 @@ pub fn run_forever(cfg: &RunnerConfig) -> ! {
         }
     }
     eprintln!(
-        "watchtower-runner {VERSION}: {} connected to {}",
+        "picket-runner {VERSION}: {} connected to {}",
         cfg.runner_id, cfg.server_url
     );
     backoff = 2;

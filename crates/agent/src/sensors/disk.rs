@@ -2,8 +2,8 @@
 //! DiskHigh/InodeHigh kinds existed but nothing emitted them.
 
 use crate::procfs::ProcFs;
+use picket_common::{AgentEvent, Config, EventKind, Evidence, Severity};
 use std::collections::HashMap;
-use wt_common::{AgentEvent, Config, EventKind, Evidence, Severity};
 
 /// Used percentage of a capacity.
 pub fn usage_pct(total: u64, free: u64) -> f64 {

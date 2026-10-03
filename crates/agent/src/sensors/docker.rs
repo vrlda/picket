@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
+use picket_common::{AgentEvent, EventKind, Evidence, Severity};
 use serde::Deserialize;
-use wt_common::{AgentEvent, EventKind, Evidence, Severity};
 
 /// One `docker ps` line (--format '{{json .}}').
 #[derive(Debug, Clone, PartialEq, Deserialize)]
@@ -164,8 +164,8 @@ impl ContainerTracker {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use picket_common::{EventKind, Severity};
     use std::path::PathBuf;
-    use wt_common::{EventKind, Severity};
 
     fn fixture() -> String {
         std::fs::read_to_string(

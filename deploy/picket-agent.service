@@ -1,23 +1,23 @@
 [Unit]
-Description=Watchtower agent
+Description=Picket agent
 After=network-online.target
 Wants=network-online.target
 
 [Service]
-User=watchtower
-Group=watchtower
+User=picket
+Group=picket
 # NOTE: docker group is included for docker hosts; on docker-less hosts,
 # remove it here or the unit fails to start (missing group = exit 216).
 SupplementaryGroups=systemd-journal adm docker
-ExecStart=/usr/local/bin/watchtower-agent run
+ExecStart=/usr/local/bin/picket-agent run
 Restart=always
 RestartSec=5
 NoNewPrivileges=yes
 ProtectSystem=strict
 ProtectHome=yes
 PrivateTmp=yes
-ReadWritePaths=/var/lib/watchtower/spool
-RuntimeDirectory=watchtower
+ReadWritePaths=/var/lib/picket/spool
+RuntimeDirectory=picket
 CapabilityBoundingSet=
 
 [Install]

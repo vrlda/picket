@@ -1,5 +1,5 @@
 //! Runner configuration (runner.toml). Everything about HOW an agent runs
-//! lives here, on the machine that runs it — the Watchtower server only
+//! lives here, on the machine that runs it — the Picket server only
 //! names a profile.
 
 use std::collections::HashMap;
@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct RunnerConfig {
-    /// Watchtower control plane, e.g. https://watchtower.example.com
+    /// Picket control plane, e.g. https://picket.example.com
     pub server_url: String,
     /// Must match a `[runners.<id>]` entry on the server.
     pub runner_id: String,
@@ -22,7 +22,7 @@ pub struct RunnerConfig {
     pub poll_timeout_secs: u64,
     /// Worktrees and logs live here.
     pub work_dir: PathBuf,
-    /// Production hosts by Watchtower host id: how the agent reaches them
+    /// Production hosts by Picket host id: how the agent reaches them
     /// over SSH. A host without an entry is reached as `ssh <host_id>`
     /// (an alias in ~/.ssh/config works).
     pub hosts: HashMap<String, Host>,
@@ -37,7 +37,7 @@ pub struct Host {
 }
 
 impl RunnerConfig {
-    /// ssh destination for a Watchtower host id.
+    /// ssh destination for a Picket host id.
     pub fn ssh_dest<'a>(&'a self, host_id: &'a str) -> &'a str {
         self.hosts
             .get(host_id)
@@ -55,7 +55,7 @@ impl Default for RunnerConfig {
             token: String::new(),
             labels: Vec::new(),
             poll_timeout_secs: 30,
-            work_dir: PathBuf::from("watchtower-runner"),
+            work_dir: PathBuf::from("picket-runner"),
             hosts: HashMap::new(),
             profiles: HashMap::new(),
         }
@@ -67,7 +67,7 @@ impl Default for RunnerConfig {
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Autonomy {
-    /// Read-only: inspect code, Watchtower and diagnostics. No changes.
+    /// Read-only: inspect code, Picket and diagnostics. No changes.
     #[default]
     Investigate,
     /// Modify code and run tests (isolated worktree, nothing committed).
@@ -102,7 +102,7 @@ pub enum Production {
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Isolation {
-    /// A git worktree on branch `watchtower/<task>` per task (default).
+    /// A git worktree on branch `picket/<task>` per task (default).
     #[default]
     Worktree,
     /// Work directly in `workspace`.
@@ -131,7 +131,7 @@ pub struct Profile {
     /// Globs whose changes need a human's approval before use.
     pub require_human_approval_paths: Vec<String>,
     /// command adapter: argv; the prompt arrives on stdin and in
-    /// $WATCHTOWER_PROMPT_FILE.
+    /// $PICKET_PROMPT_FILE.
     pub command: Vec<String>,
     /// claude-code adapter: executable (default "claude").
     pub claude_bin: String,
@@ -217,7 +217,7 @@ mod tests {
     fn parses_example_config() {
         let cfg: RunnerConfig = toml::from_str(
             r#"
-            server_url = "https://watchtower.example.com"
+            server_url = "https://picket.example.com"
             runner_id = "home-mac"
             token = "t"
             labels = ["payments"]
@@ -261,7 +261,7 @@ mod tests {
     #[test]
     fn rejects_plain_http_and_bad_profiles() {
         let mut cfg = RunnerConfig {
-            server_url: "http://watchtower.example.com".into(),
+            server_url: "http://picket.example.com".into(),
             runner_id: "r".into(),
             token: "t".into(),
             ..Default::default()

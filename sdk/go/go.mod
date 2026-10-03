@@ -1,3 +1,3 @@
-module watchtower-sdk
+module picket-sdk
 
 go 1.21

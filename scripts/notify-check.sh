@@ -4,13 +4,13 @@
 #   TELEGRAM_BOT_TOKEN=... [TELEGRAM_CHAT_ID=...] bash scripts/notify-check.sh
 #   SLACK_URL=... bash scripts/notify-check.sh
 #   WEBHOOK_URL=... bash scripts/notify-check.sh
-# Starts a throwaway watchtower-server with those credentials, injects one
+# Starts a throwaway picket-server with those credentials, injects one
 # Critical event, waits until the incident is created and notified, then
 # prints the server log (delivery errors show up there).
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-BIN="${WATCHTOWER_SERVER_BIN:-$ROOT/target/release/watchtower-server}"
+BIN="${PICKET_SERVER_BIN:-$ROOT/target/release/picket-server}"
 PORT="${NOTIFY_CHECK_PORT:-18790}"
 TOKEN="${NOTIFY_CHECK_TOKEN:-notify-check-token}"
 WORK="$(mktemp -d)"

@@ -1,10 +1,10 @@
-# Watchtower 1.0 — Release Notes
+# Picket 1.0 — Release Notes
 
 ## What ships
 
-- `watchtower-agent`: health/resource/systemd/ssh-auth/file-integrity/netflow/
+- `picket-agent`: health/resource/systemd/ssh-auth/file-integrity/netflow/
   reboot/error-rate/docker/TLS sensors; local detection; telemetry with spool.
-- `watchtower-server`: ingest, hosts, events, incidents + correlation,
+- `picket-server`: ingest, hosts, events, incidents + correlation,
   Telegram (with Acknowledge/Resolve buttons)/webhook/Slack notifications,
   watchdog. Headless — no web UI.
 - `scripts/install.sh`: agent install (user, unit, config, discovery checklist).
@@ -16,34 +16,34 @@
       SERVER_URL=<server-url> TOKEN=<shared-token> \
       sudo sh scripts/install.sh
 
-The agent runs as the dedicated `watchtower` user (journal/docker group access,
+The agent runs as the dedicated `picket` user (journal/docker group access,
 no capabilities). Hosts self-register on the first heartbeat.
 
 ## Install the server (from the same tarball)
 
     # prerequisites — the unit does not create these
-    mkdir -p /var/lib/watchtower /etc/watchtower
-    chown watchtower:watchtower /var/lib/watchtower
+    mkdir -p /var/lib/picket /etc/picket
+    chown picket:picket /var/lib/picket
 
     # config (auth_token is REQUIRED — the server refuses to run without it)
-    cat > /etc/watchtower/server.toml <<EOF
+    cat > /etc/picket/server.toml <<EOF
     listen = "127.0.0.1:8787"
-    db_url = "sqlite:///var/lib/watchtower/watchtower.db"
+    db_url = "sqlite:///var/lib/picket/picket.db"
     auth_token = "changeme"
     EOF
-    chown watchtower:watchtower /etc/watchtower/server.toml
+    chown picket:picket /etc/picket/server.toml
 
-    install -m 0755 watchtower-server /usr/local/bin/watchtower-server
-    cp watchtower-server.service /etc/systemd/system/
-    systemctl daemon-reload && systemctl enable --now watchtower-server
+    install -m 0755 picket-server /usr/local/bin/picket-server
+    cp picket-server.service /etc/systemd/system/
+    systemctl daemon-reload && systemctl enable --now picket-server
 
-    # Telegram alerts: the unit reads /etc/watchtower/server.env
-    cat > /etc/watchtower/server.env <<EOF
+    # Telegram alerts: the unit reads /etc/picket/server.env
+    cat > /etc/picket/server.env <<EOF
     TELEGRAM_BOT_TOKEN=<bot token>
     TELEGRAM_BOT_PASSWORD=<secret>   # or TELEGRAM_CHAT_ID=<chat id>
     EOF
-    chmod 0600 /etc/watchtower/server.env
-    systemctl restart watchtower-server
+    chmod 0600 /etc/picket/server.env
+    systemctl restart picket-server
 
 The server is headless: alerts go to Telegram/Slack/webhook, and incidents are
 acknowledged/resolved from the Telegram buttons or the API. Expose the

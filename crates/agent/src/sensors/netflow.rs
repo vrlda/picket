@@ -2,7 +2,7 @@ use std::collections::{HashSet, VecDeque};
 
 use crate::engine::SpikeDetector;
 use crate::procfs::{ProcFs, TcpEntry};
-use wt_common::{AgentEvent, EventKind, Evidence, Severity};
+use picket_common::{AgentEvent, EventKind, Evidence, Severity};
 
 /// Snapshot state for network monitoring: previous listen/remote sets and a
 /// rolling detector on the established-connection count.
@@ -217,8 +217,8 @@ fn entries(p: &ProcFs, state: &str) -> Vec<TcpEntry> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use picket_common::{EventKind, Severity};
     use std::path::PathBuf;
-    use wt_common::{EventKind, Severity};
 
     fn procfs() -> crate::procfs::ProcFs {
         crate::procfs::ProcFs::new(

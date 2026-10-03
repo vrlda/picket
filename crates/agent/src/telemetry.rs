@@ -2,7 +2,7 @@ use std::fs;
 use std::io::Write;
 use std::path::PathBuf;
 
-use wt_common::{AgentEvent, Heartbeat};
+use picket_common::{AgentEvent, Heartbeat};
 
 /// Spool refuses to grow beyond this (10 MB) — drops new batches with a
 /// loud log rather than filling the disk. MVP trade-off, documented.
@@ -247,9 +247,9 @@ fn post_json(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use picket_common::{AgentEvent, EventKind, Heartbeat, Severity};
     use std::io::{Read, Write};
     use std::net::TcpListener;
-    use wt_common::{AgentEvent, EventKind, Heartbeat, Severity};
 
     fn sample_event(ts: i64) -> AgentEvent {
         AgentEvent {

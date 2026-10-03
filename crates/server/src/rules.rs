@@ -2,9 +2,9 @@
 //! (rules over custom application/business events). Deliberately small:
 //! dotted field paths and a handful of comparison operators — no DSL.
 
+use picket_common::AgentEvent;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use wt_common::AgentEvent;
 
 /// Comparison operator of a `[[rule.where]]` condition. Accepts both the
 /// names (`gte`) and the symbols (`>=`).
@@ -172,7 +172,7 @@ mod tests {
 
     fn ev() -> AgentEvent {
         let mut e = AgentEvent {
-            kind: wt_common::EventType::parse("payment.request_failed").unwrap(),
+            kind: picket_common::EventType::parse("payment.request_failed").unwrap(),
             source: "payment-api".into(),
             subject: "merchant:mer_1".into(),
             ..Default::default()

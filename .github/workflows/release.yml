@@ -14,7 +14,7 @@ jobs:
   build:
     # musl build = fully static binaries that run on any Linux (glibc
     # builds from the 24.04 runner fail on older distros — verified live).
-    # macOS builds are mainly for watchtower-runner on a Mac.
+    # macOS builds are mainly for picket-runner on a Mac.
     strategy:
       matrix:
         include:
@@ -37,7 +37,7 @@ jobs:
       - run: TARGETS="${{ matrix.target }}" bash scripts/release.sh
       - uses: actions/upload-artifact@v4
         with:
-          name: watchtower-${{ matrix.target }}
+          name: picket-${{ matrix.target }}
           path: dist/*.tar.gz
 
   publish:
@@ -51,7 +51,7 @@ jobs:
           path: dist
           merge-multiple: true
       # one checksum file for every target's tarball
-      - run: cd dist && sha256sum watchtower-*.tar.gz > SHA256SUMS && cat SHA256SUMS
+      - run: cd dist && sha256sum picket-*.tar.gz > SHA256SUMS && cat SHA256SUMS
       - uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ inputs.tag || github.ref_name }}
