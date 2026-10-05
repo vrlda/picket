@@ -5,6 +5,8 @@
 
 Production server and application autopilot. A small agent watches the health and security of your servers, your apps send exceptions and custom business events, and a control plane correlates it all into incidents — then tells a human, or hands the incident to a coding agent (Claude Code) on an always-on machine and verifies the fix from production telemetry. No per-seat pricing, no cloud dependency — it runs on your own box or VPS.
 
+From the maker of [Vulta](https://vulta.one), non-custodial card and crypto payments that settle straight to your own wallet.
+
 ## What it watches
 
 | Area | Signals |
