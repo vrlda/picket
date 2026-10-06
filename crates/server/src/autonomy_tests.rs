@@ -596,6 +596,74 @@ async fn escalation_retry_and_lease_expiry() {
     );
 }
 
+/// A band-aid must not pass as a fix: even on a rule that only hears about
+/// failures, a mitigation reaches a human with the real fix still owed,
+/// while a permanent fix stays quiet.
+#[tokio::test]
+async fn mitigation_is_reported_even_when_successes_are_quiet() {
+    let s = state().await;
+    let mut notifications = s.take_notify_rx().unwrap();
+    let app = build_app(s.clone()).await;
+    let complete = |merchant: &'static str, result: Value| {
+        let (s, app) = (s.clone(), app.clone());
+        async move {
+            store(
+                &s,
+                &(0..5)
+                    .map(|i| failure(&format!("{merchant}{i}"), *T0 + i, merchant))
+                    .collect::<Vec<_>>(),
+            )
+            .await;
+            scan(&s, *T0 + 1000).await;
+            let (_, b) = call(
+                &app,
+                "GET",
+                "/v1/agent-tasks/next?timeout=0",
+                "runner-token",
+                None,
+            )
+            .await;
+            let id = b["task"]["task_id"].as_str().unwrap().to_string();
+            let (st, b) = call(
+                &app,
+                "POST",
+                &format!("/v1/agent-tasks/{id}/complete"),
+                "runner-token",
+                Some(result),
+            )
+            .await;
+            assert_eq!(st, StatusCode::OK, "{b}");
+        }
+    };
+
+    complete(
+        "mer_p",
+        json!({"outcome": "fixed", "fix_type": "permanent", "summary": "bad config reverted"}),
+    )
+    .await;
+    assert!(
+        notifications.try_recv().is_err(),
+        "permanent fix stays quiet under on_agent_failure"
+    );
+
+    complete(
+        "mer_m",
+        json!({
+            "outcome": "fixed", "fix_type": "mitigation",
+            "classification": "external_provider",
+            "summary": "Provider is slow, not down; raised the issuance timeout",
+            "follow_up": "Provider must fix latency on payment details issuance"
+        }),
+    )
+    .await;
+    let n = notifications.try_recv().expect("mitigation notifies");
+    let text = n["_notice"]["text"].as_str().unwrap();
+    assert!(
+        text.contains("temporary fix") && text.contains("real fix: Provider must fix latency"),
+        "{text}"
+    );
+}
+
 #[tokio::test]
 async fn loop_guard_limits_tasks_per_incident() {
     let s = state().await;

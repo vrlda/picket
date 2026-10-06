@@ -648,6 +648,10 @@ pub struct AgentResult {
     pub summary: String,
     pub root_cause: String,
     pub actions: Vec<String>,
+    /// "permanent" or "mitigation" (symptom relieved, root cause remains).
+    pub fix_type: String,
+    /// The real fix still needed (mitigation only).
+    pub follow_up: String,
     pub needs_human_reason: String,
     pub changes: Value,
     pub tests: Value,
@@ -673,6 +677,8 @@ pub async fn complete(
         result_json = json!({
             "outcome": result.outcome,
             "classification": result.classification,
+            "fix_type": result.fix_type,
+            "follow_up": crate::notify::truncate_chars(&result.follow_up, 2000),
             "summary": crate::notify::truncate_chars(&result.summary, 4000),
             "truncated": true,
         });
@@ -691,6 +697,14 @@ pub async fn complete(
             (status::AWAITING_VERIFICATION, Moment::AgentSucceeded)
         }
         _ => (status::SUCCEEDED, Moment::AgentSucceeded),
+    };
+    // A mitigation leaves the root cause in place: a human must hear about
+    // it even where agent successes are quiet.
+    let mitigation = result.outcome == "fixed" && result.fix_type == "mitigation";
+    let moment = if mitigation {
+        Moment::Escalation
+    } else {
+        moment
     };
     let now = now_ms();
     sqlx::query(
@@ -714,6 +728,9 @@ pub async fn complete(
         _ => "🔎 Agent finished its investigation",
     };
     lines.push(head.to_string());
+    if mitigation {
+        lines.push("🩹 temporary fix (mitigation): the root cause is still there".to_string());
+    }
     if !result.classification.is_empty() {
         lines.push(format!("classification: {}", result.classification));
     }
@@ -730,6 +747,12 @@ pub async fn complete(
     }
     for a in result.actions.iter().take(8) {
         lines.push(format!(" • {}", crate::notify::truncate_chars(a, 200)));
+    }
+    if mitigation && !result.follow_up.is_empty() {
+        lines.push(format!(
+            "real fix: {}",
+            crate::notify::truncate_chars(&result.follow_up, 600)
+        ));
     }
     if new_status == status::NEEDS_HUMAN && !result.needs_human_reason.is_empty() {
         lines.push(format!(

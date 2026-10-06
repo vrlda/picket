@@ -286,6 +286,7 @@ picket-runner --config runner.toml run      # or install deploy/com.picket.runne
 **What happens:** incident → durable task (one active task per incident) → the runner's long-poll claims it under a lease → Claude Code runs in a fresh git worktree on branch `picket/<task>` (your checkout is never touched) with the incident context → it classifies the problem (platform bug vs. client integration vs. invalid input vs. provider issue …), fixes within its autonomy, runs tests, and ends with a structured result → the runner checks the **actual** changes against the autonomy level and path rules (violations become a human escalation) → Picket records everything in the incident's activity log:
 
 - `fixed` + `[rule.recovery]` → *awaiting verification*; the incident resolves only after the trigger stays quiet for the recovery window. A recurring failure resets the timer; no recovery within `verify_timeout_secs` → you're told the fix didn't verify.
+- `fixed` with `fix_type: "mitigation"` (symptom relieved, root cause remains: a raised timeout, a restart of a leaking process) → you're always told, with the real fix still needed (`follow_up`), even on rules where agent successes stay quiet.
 - `no_change` → diagnosis recorded (e.g. "merchant signs webhooks with the wrong secret").
 - `needs_human` → Telegram gets the diagnosis and *exactly* what decision is needed; the incident is not re-dispatched.
 - Runner offline / CLI crash / quota / timeout → retried up to `max_attempts`, then you're told. A task no runner picks up within 5 minutes alerts too.

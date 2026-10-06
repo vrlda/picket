@@ -18,6 +18,8 @@ pub struct AgentResult {
     pub summary: String,
     pub root_cause: String,
     pub actions: Vec<String>,
+    pub fix_type: String,
+    pub follow_up: String,
     pub needs_human_reason: String,
     pub changes: Value,
     pub tests: Value,
@@ -148,6 +150,8 @@ FINISH by ending your final message with exactly one JSON object in a ```json fe
   "summary": "one-paragraph diagnosis",
   "root_cause": "…",
   "actions": ["what you did"],
+  "fix_type": "permanent | mitigation (fixed only)",
+  "follow_up": "the real fix still needed and who must do it (mitigation only)",
   "needs_human_reason": "exactly what a human must decide or do (needs_human only)",
   "tests": {{ "status": "passed | failed | not_run", "details": "…" }},
   "deployment": {{ "status": "not_deployed | deployed", "environment": "…", "version": "…" }},
@@ -155,6 +159,7 @@ FINISH by ending your final message with exactly one JSON object in a ```json fe
 }}
 ```
 Use "fixed" only if you changed something that should resolve the incident; Picket will verify recovery from production telemetry before the incident is closed.
+Set fix_type to "mitigation" when the fix relieves the symptom without removing the root cause (raised a timeout, restarted a leaking process, freed disk that will fill again), and say in follow_up what the real fix is.
 {extra}
 {fence}
 {context}
@@ -327,10 +332,13 @@ mod tests {
         assert_eq!(r.classification, "client_integration");
         assert_eq!(r.confidence, Some(0.8));
         // bare object fallback, nested braces
-        let r = parse_result("done {\"outcome\":\"fixed\",\"tests\":{\"status\":\"passed\"}} bye")
+        let r = parse_result("done {\"outcome\":\"fixed\",\"fix_type\":\"mitigation\",\"follow_up\":\"provider latency\",\"tests\":{\"status\":\"passed\"}} bye")
             .unwrap();
         assert_eq!(r.outcome, "fixed");
         assert_eq!(r.tests["status"], "passed");
+        // the band-aid flag survives to the server
+        assert_eq!(r.fix_type, "mitigation");
+        assert_eq!(r.follow_up, "provider latency");
         assert!(parse_result("no result here {\"a\":1}").is_none());
     }
 
