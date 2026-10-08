@@ -252,7 +252,16 @@ impl AgentState {
             crash: crate::sensors::systemd::CrashTracker::new(120),
             ssh_seen,
             ssh_brute: BruteForceTracker::new(cfg.ssh_brute_threshold, cfg.ssh_brute_window_secs),
-            net: NetState::default(),
+            net: {
+                // a saved baseline means this host was already seeded
+                let mut net = NetState::default();
+                net.seen_listen
+                    .extend(persisted.seen_listen.iter().cloned());
+                net.seen_remote
+                    .extend(persisted.seen_remote.iter().cloned());
+                net.seeded = !net.seen_listen.is_empty() || !net.seen_remote.is_empty();
+                net
+            },
             docker: crate::sensors::docker::ContainerTracker::default(),
             reboot: RebootDetector::default(),
             journal_since_ms,
@@ -294,6 +303,14 @@ impl AgentState {
         self.persisted.seen_ips = self.ssh_seen.all();
         self.persisted.journal_cursor_ms = self.journal_since_ms;
         self.persisted.last_cert_scan = self.last_cert_scan;
+        if self.net.seeded {
+            let mut v: Vec<String> = self.net.seen_listen.iter().cloned().collect();
+            v.sort();
+            self.persisted.seen_listen = v;
+            let mut v: Vec<String> = self.net.seen_remote.iter().cloned().collect();
+            v.sort();
+            self.persisted.seen_remote = v;
+        }
         if let Some(exes) = &self.known_exes {
             let mut v: Vec<String> = exes.iter().cloned().collect();
             v.sort();
@@ -962,6 +979,7 @@ mod tests {
         };
         let mut deduper = Deduper::new(300);
         let mut state = AgentState::new(&cfg, "h-1");
+        state.net.seeded = true; // established host: its first scan is past
         let p = fixture_procfs();
         let journal_out = r#"{"__REALTIME_TIMESTAMP":"1758000000100000","SYSLOG_IDENTIFIER":"sshd","MESSAGE":"Failed password for root from 203.0.113.7 port 40000 ssh2"}
 {"__REALTIME_TIMESTAMP":"1758000000200000","SYSLOG_IDENTIFIER":"sshd","MESSAGE":"Failed password for root from 203.0.113.7 port 40001 ssh2"}"#;
@@ -1465,6 +1483,7 @@ mod tests {
                 journal_cursor_ms: 1_758_000_000_100, // past the fake line's ts
                 last_cert_scan: 0,
                 known_exes: vec![],
+                ..Default::default()
             },
         );
         let cfg = Config {

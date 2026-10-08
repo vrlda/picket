@@ -54,6 +54,13 @@ pub struct Rule {
     /// the recovery window.
     #[serde(default)]
     pub recovery: Option<Recovery>,
+    /// Re-notify an open incident that absorbs new events at most once per
+    /// this many seconds (default: the server's `notify_min_interval_secs`).
+    /// `0` = notify when the incident opens and when it resolves, never in
+    /// between — for conditions that last hours (a frozen rate source) and
+    /// keep reporting while they last.
+    #[serde(default)]
+    pub renotify_secs: Option<i64>,
     /// The fallback rule matches no trigger; handled separately.
     #[serde(skip)]
     pub is_fallback: bool,
@@ -720,7 +727,8 @@ pub async fn recently_resolved(
 /// per window — the M4-era "full payload per absorb" debt.
 pub struct NotifyThrottle {
     window_ms: i64,
-    last: std::collections::HashMap<String, i64>,
+    /// incident id -> (last notified at, its window)
+    last: std::collections::HashMap<String, (i64, i64)>,
 }
 
 impl NotifyThrottle {
@@ -732,20 +740,43 @@ impl NotifyThrottle {
     }
 
     pub fn allow(&mut self, incident_id: &str, ts: i64) -> bool {
-        // Entries older than the window would be allowed anyway — dropping
+        self.allow_within(incident_id, ts, self.window_ms)
+    }
+
+    /// Like `allow` with a per-incident window (a rule's `renotify_secs`).
+    pub fn allow_within(&mut self, incident_id: &str, ts: i64, window_ms: i64) -> bool {
+        // Entries older than their window would be allowed anyway — dropping
         // them is behavior-neutral and keeps the map from growing by one
         // entry per incident for the life of the process.
         if self.last.len() >= 1024 {
-            let window = self.window_ms;
-            self.last.retain(|_, t| ts.saturating_sub(*t) < window);
+            self.last.retain(|_, (t, w)| ts.saturating_sub(*t) < *w);
         }
-        let last = self.last.entry(incident_id.to_string()).or_insert(i64::MIN);
-        if ts.saturating_sub(*last) >= self.window_ms {
-            *last = ts;
+        let last = self
+            .last
+            .entry(incident_id.to_string())
+            .or_insert((i64::MIN, window_ms));
+        if ts.saturating_sub(last.0) >= window_ms {
+            *last = (ts, window_ms);
             true
         } else {
             false
         }
+    }
+}
+
+/// Whether an incident that changed in this scan should notify. With
+/// `renotify_secs = 0` only a freshly opened incident does (its created_at is
+/// this scan), which also holds across server restarts.
+pub fn should_notify(
+    throttle: &mut NotifyThrottle,
+    inc: &Incident,
+    renotify_secs: Option<i64>,
+    scan_started: i64,
+) -> bool {
+    match renotify_secs {
+        Some(0) => inc.created_at >= scan_started,
+        Some(secs) => throttle.allow_within(&inc.id, scan_started, secs.max(0) * 1000),
+        None => throttle.allow(&inc.id, scan_started),
     }
 }
 
@@ -775,7 +806,12 @@ async fn scan_loop(state: crate::app::AppState) {
                     // took it; new dispatch news bypasses the throttle
                     let dispatch = crate::agent_tasks::dispatch_for_incident(&state, inc).await;
                     let news = dispatch.as_ref().is_some_and(|(_, new)| *new);
-                    if !throttle.allow(&inc.id, now) && !news {
+                    let renotify = state
+                        .rules
+                        .iter()
+                        .find(|r| r.id == inc.rule_id)
+                        .and_then(|r| r.renotify_secs);
+                    if !should_notify(&mut throttle, inc, renotify, now) && !news {
                         continue;
                     }
                     eprintln!("incident {}: {} [{}]", inc.id, inc.headline, inc.severity);
@@ -1439,6 +1475,65 @@ actions = ["Review the change to the affected file", "Roll back the latest confi
         assert!(!t.allow("inc-1", 300_000), "within the window suppressed");
         assert!(t.allow("inc-1", 301_001), "past the window allowed");
         assert!(t.allow("inc-2", 301_001), "different incident unaffected");
+    }
+
+    fn incident_created_at(created_at: i64) -> Incident {
+        Incident {
+            id: "inc-1".into(),
+            key: "rule:rates_source_down:source=rapira".into(),
+            host_id: String::new(),
+            severity: "Critical".into(),
+            status: crate::incidents::IncidentStatus::Open,
+            headline: String::new(),
+            cause: String::new(),
+            actions: vec![],
+            affected: vec![],
+            created_at,
+            updated_at: created_at,
+            acked_at: None,
+            resolved_at: None,
+            timeline: vec![],
+            rule_id: "rates_source_down".into(),
+        }
+    }
+
+    #[test]
+    fn renotify_zero_notifies_only_when_the_incident_opens() {
+        // a rate source frozen for hours keeps reporting; the operator wants
+        // one message when it breaks and one when it recovers, not one every
+        // throttle window (owner request 2026-10-09)
+        let mut t = NotifyThrottle::new(60);
+        let opened = incident_created_at(10_000);
+        assert!(
+            should_notify(&mut t, &opened, Some(0), 10_000),
+            "opening notifies"
+        );
+        assert!(
+            !should_notify(&mut t, &opened, Some(0), 70_000),
+            "absorb is quiet"
+        );
+        assert!(
+            !should_notify(&mut t, &opened, Some(0), 99_000_000),
+            "hours later still quiet"
+        );
+    }
+
+    #[test]
+    fn renotify_secs_overrides_the_global_throttle() {
+        let mut t = NotifyThrottle::new(60);
+        let inc = incident_created_at(0);
+        assert!(should_notify(&mut t, &inc, Some(3600), 1_000));
+        assert!(
+            !should_notify(&mut t, &inc, Some(3600), 120_000),
+            "global 60s would allow; rule says 1h"
+        );
+        assert!(should_notify(&mut t, &inc, Some(3600), 3_601_001));
+        let mut g = NotifyThrottle::new(60);
+        assert!(should_notify(&mut g, &inc, None, 1_000));
+        assert!(
+            should_notify(&mut g, &inc, None, 61_001),
+            "no rule setting: global window"
+        );
     }
 
     #[test]

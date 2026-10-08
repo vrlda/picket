@@ -1083,7 +1083,7 @@ checksum = "9b4f627cb1b25917193a259e49bdad08f671f8d9708acfd5fe0a8c1455d87220"
 
 [[package]]
 name = "picket-agent"
-version = "0.6.0"
+version = "0.6.1"
 dependencies = [
  "clap",
  "glob",
@@ -1099,7 +1099,7 @@ dependencies = [
 
 [[package]]
 name = "picket-common"
-version = "0.6.0"
+version = "0.6.1"
 dependencies = [
  "serde",
  "serde_json",
@@ -1108,7 +1108,7 @@ dependencies = [
 
 [[package]]
 name = "picket-runner"
-version = "0.6.0"
+version = "0.6.1"
 dependencies = [
  "axum",
  "clap",
@@ -1125,7 +1125,7 @@ dependencies = [
 
 [[package]]
 name = "picket-sdk"
-version = "0.6.0"
+version = "0.6.1"
 dependencies = [
  "serde",
  "serde_json",
@@ -1134,7 +1134,7 @@ dependencies = [
 
 [[package]]
 name = "picket-server"
-version = "0.6.0"
+version = "0.6.1"
 dependencies = [
  "axum",
  "clap",

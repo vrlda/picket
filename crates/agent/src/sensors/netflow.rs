@@ -4,12 +4,21 @@ use crate::engine::SpikeDetector;
 use crate::procfs::{ProcFs, TcpEntry};
 use picket_common::{AgentEvent, EventKind, Evidence, Severity};
 
-/// Snapshot state for network monitoring: previous listen/remote sets and a
-/// rolling detector on the established-connection count.
+/// Cap on remembered outbound destinations; past it the set is reseeded
+/// silently so memory and the state file stay bounded.
+pub const MAX_SEEN_REMOTE: usize = 20_000;
+
+/// Network monitoring state. "New" means never seen on this host (persisted
+/// across restarts), not "absent from the previous scan": a server that
+/// reconnects to the same API every few seconds, or a deploy that briefly
+/// reopens a standby port, must not alert again each time. The first scan
+/// with no remembered state only seeds the baseline.
 pub struct NetState {
     prev_listen: HashSet<String>,
     prev_udp_listen: HashSet<String>,
-    prev_remote: HashSet<String>,
+    pub seen_listen: HashSet<String>,
+    pub seen_remote: HashSet<String>,
+    pub seeded: bool,
     prev_scan_pairs: HashSet<String>,
     recent_connects: VecDeque<(i64, String)>,
     prev_count: usize,
@@ -21,7 +30,9 @@ impl Default for NetState {
         NetState {
             prev_listen: HashSet::new(),
             prev_udp_listen: HashSet::new(),
-            prev_remote: HashSet::new(),
+            seen_listen: HashSet::new(),
+            seen_remote: HashSet::new(),
+            seeded: false,
             prev_scan_pairs: HashSet::new(),
             recent_connects: VecDeque::new(),
             prev_count: 0,
@@ -68,8 +79,16 @@ impl NetState {
             .filter(|ip| ip != "0.0.0.0" && ip != "::")
             .collect();
         let count = entries(p, "ESTABLISHED").len();
+        if self.seen_remote.len() > MAX_SEEN_REMOTE {
+            self.seen_remote.clear();
+            self.seeded = false;
+        }
+        let seeding = !self.seeded;
 
         for new in listen.difference(&self.prev_listen) {
+            if !self.seen_listen.insert(new.clone()) || seeding {
+                continue;
+            }
             evs.push(AgentEvent {
                 id: format!("port-{}-{}", new, ts),
                 ts,
@@ -99,7 +118,10 @@ impl NetState {
             }
             let key = format!("udp:{}:{}", ip, port);
             udp_now.insert(key.clone());
-            if self.prev_udp_listen.insert(key.clone()) {
+            if self.prev_udp_listen.insert(key.clone())
+                && self.seen_listen.insert(key.clone())
+                && !seeding
+            {
                 evs.push(AgentEvent {
                     id: format!("port-{}-{}", key, ts),
                     ts,
@@ -118,7 +140,10 @@ impl NetState {
             }
         }
         self.prev_udp_listen.retain(|k| udp_now.contains(k));
-        for new in remote.difference(&self.prev_remote) {
+        for new in &remote {
+            if !self.seen_remote.insert(new.clone()) || seeding {
+                continue;
+            }
             evs.push(AgentEvent {
                 id: format!("out-{}-{}", new, ts),
                 ts,
@@ -193,7 +218,7 @@ impl NetState {
         }
 
         self.prev_listen = listen;
-        self.prev_remote = remote;
+        self.seeded = true;
         self.prev_count = count;
         evs
     }
@@ -226,10 +251,48 @@ mod tests {
         )
     }
 
+    /// A host whose baseline is already established (first scan done).
+    fn seeded() -> NetState {
+        NetState {
+            seeded: true,
+            ..Default::default()
+        }
+    }
+
+    fn empty_procfs() -> crate::procfs::ProcFs {
+        crate::procfs::ProcFs::new(std::env::temp_dir().join("picket-no-such-proc"))
+    }
+
+    #[test]
+    fn first_scan_only_seeds_the_baseline() {
+        // a fresh agent on a busy server must not report every existing
+        // port and connection as "new" (2026-10-09: 80 alerts on install)
+        let p = procfs();
+        let mut state = NetState::default();
+        assert!(state.observe(&p, 1000, "h-1", 25, 10_000).is_empty());
+        assert!(state.seen_listen.contains("tcp:127.0.0.1:8080"));
+        assert!(state.seen_remote.contains("93.184.216.47"));
+    }
+
+    #[test]
+    fn reconnecting_to_a_known_destination_or_reopening_a_port_is_quiet() {
+        // an API client reconnects every few seconds and a deploy reopens a
+        // standby port: neither is "new" again (previously it alerted forever)
+        let p = procfs();
+        let mut state = seeded();
+        assert!(!state.observe(&p, 1000, "h-1", 25, 10_000).is_empty());
+        let _ = state.observe(&empty_procfs(), 2000, "h-1", 25, 10_000);
+        let evs = state.observe(&p, 3000, "h-1", 25, 10_000);
+        assert!(evs
+            .iter()
+            .all(|e| e.kind != EventKind::NewOutboundConnection
+                && e.kind != EventKind::NewListeningPort));
+    }
+
     #[test]
     fn new_listening_port_and_outbound_emitted_then_quiet() {
         let p = procfs();
-        let mut state = NetState::default();
+        let mut state = seeded();
         let evs = state.observe(&p, 1000, "h-1", 25, 10_000);
         let port_ev = evs
             .iter()
@@ -252,7 +315,7 @@ mod tests {
     #[test]
     fn udp_listens_emitted_as_new_listening_ports() {
         let p = procfs();
-        let mut state = NetState::default();
+        let mut state = seeded();
         let evs = state.observe(&p, 1000, "h-1", 25, 10_000);
         let ev = evs
             .iter()
@@ -270,7 +333,7 @@ mod tests {
     #[test]
     fn udp_ephemeral_ports_not_reported() {
         let p = procfs();
-        let mut state = NetState::default();
+        let mut state = seeded();
         let evs = state.observe(&p, 1000, "h-1", 25, 10_000);
         // real listeners still fire
         assert!(evs.iter().any(|e| e.key == "port:udp:0.0.0.0:5353"));

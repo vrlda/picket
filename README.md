@@ -191,6 +191,7 @@ op = "<"
 value = 0.70
 ```
 
+- `renotify_secs` (per rule): an open incident that absorbs new events re-notifies at most once per this many seconds (default `notify_min_interval_secs`). `renotify_secs = 0` notifies only when the incident opens; with `[rule.recovery]` you get exactly two messages for a long outage, "opened" and "✅ resolved", however long it lasts.
 - `count` events matching `trigger` and every `where` within `window_secs`, per `group_by` key, open one incident keyed `rule:<id>:merchant_id=mer_123`; later matches absorb into it.
 - Fields: `attributes.<name>`, `measurements.<name>`, `source` (alias `service`), `environment`, `subject`, `kind`, `severity`, `host_id`, `key`. Templates fill any of them (`{attributes.merchant_id}`), plus `{count}` and `{window}`.
 - Exceptions from `/v1/errors` carry `source`, `environment` and `attributes.exception_type`, so `trigger = "AppException"` rules can group by service too.
