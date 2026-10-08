@@ -73,8 +73,16 @@ impl NetState {
             .into_iter()
             .map(|e| format!("tcp:{}:{}", e.local_ip, e.local_port))
             .collect();
+        // Outbound only: a connection whose local port is one of our listening
+        // ports is a client connecting IN (e.g. every Cloudflare edge IP
+        // reaching nginx), not a new destination this host talks to.
+        let listen_ports: HashSet<u16> = entries(p, "LISTEN")
+            .into_iter()
+            .map(|e| e.local_port)
+            .collect();
         let remote: HashSet<String> = entries(p, "ESTABLISHED")
             .into_iter()
+            .filter(|e| !listen_ports.contains(&e.local_port))
             .map(|e| e.remote_ip.clone())
             .filter(|ip| ip != "0.0.0.0" && ip != "::")
             .collect();
@@ -272,6 +280,16 @@ mod tests {
         assert!(state.observe(&p, 1000, "h-1", 25, 10_000).is_empty());
         assert!(state.seen_listen.contains("tcp:127.0.0.1:8080"));
         assert!(state.seen_remote.contains("93.184.216.47"));
+    }
+
+    #[test]
+    fn inbound_clients_are_not_outbound_destinations() {
+        // fixture line 3: 203.0.113.9 connected IN to our listening :8080
+        let p = procfs();
+        let mut state = seeded();
+        let evs = state.observe(&p, 1000, "h-1", 25, 10_000);
+        assert!(evs.iter().any(|e| e.key == "net:out:93.184.216.47"));
+        assert!(!evs.iter().any(|e| e.key == "net:out:203.0.113.9"));
     }
 
     #[test]

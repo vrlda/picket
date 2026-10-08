@@ -1,6 +1,6 @@
 [package]
 name = "picket-runner"
-version = "0.6.1"
+version = "0.6.2"
 edition = "2021"
 description = "Runs Picket agent tasks on an always-on machine (outbound HTTPS only)"
 
