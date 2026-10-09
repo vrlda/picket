@@ -322,8 +322,22 @@ pub fn telegram_message_body(
     body.to_string()
 }
 
+/// Resolve with IPv4 addresses first. ureq tries addresses in order, and a
+/// host whose IPv6 route to Telegram intermittently blackholes would stall
+/// every call (button answers took up to 15 s, getUpdates failed with
+/// "Network Error" and slept; seen 2026-10-09).
+fn ipv4_first(netloc: &str) -> std::io::Result<Vec<std::net::SocketAddr>> {
+    use std::net::ToSocketAddrs;
+    let mut addrs: Vec<std::net::SocketAddr> = netloc.to_socket_addrs()?.collect();
+    addrs.sort_by_key(|a| a.is_ipv6());
+    Ok(addrs)
+}
+
 fn http_agent(timeout_secs: u64) -> ureq::Agent {
     ureq::AgentBuilder::new()
+        .resolver(ipv4_first)
+        // a dead address is skipped after 5 s instead of eating the whole budget
+        .timeout_connect(std::time::Duration::from_secs(5))
         .timeout(std::time::Duration::from_secs(timeout_secs))
         .build()
 }
@@ -824,23 +838,28 @@ impl TelegramBot {
     async fn run(&mut self) {
         let mut offset: Option<i64> = None;
         let mut last_error = String::new();
+        // retry quickly: a button press waits for the next getUpdates
+        let mut backoff = 1u64;
         loop {
-            let updates =
-                match resolve_updates(&self.api_base, &self.client.token, offset, 25).await {
-                    Ok(u) => {
-                        last_error.clear();
-                        u
+            let updates = match resolve_updates(&self.api_base, &self.client.token, offset, 25)
+                .await
+            {
+                Ok(u) => {
+                    last_error.clear();
+                    backoff = 1;
+                    u
+                }
+                Err(e) => {
+                    // log each distinct error once, not every 15s
+                    if e != last_error {
+                        eprintln!("telegram: getUpdates failed ({e}); retrying (1-15s backoff)");
+                        last_error = e;
                     }
-                    Err(e) => {
-                        // log each distinct error once, not every 15s
-                        if e != last_error {
-                            eprintln!("telegram: getUpdates failed ({e}); retrying every 15s");
-                            last_error = e;
-                        }
-                        tokio::time::sleep(std::time::Duration::from_secs(15)).await;
-                        continue;
-                    }
-                };
+                    tokio::time::sleep(std::time::Duration::from_secs(backoff)).await;
+                    backoff = (backoff * 2).min(15);
+                    continue;
+                }
+            };
             for u in &updates {
                 if let Some(update_id) = u["update_id"].as_i64() {
                     offset = Some(offset.map_or(update_id + 1, |o| o.max(update_id + 1)));
@@ -1112,6 +1131,17 @@ mod tests {
                 ..Default::default()
             }],
             rule_id: String::new(),
+        }
+    }
+
+    #[test]
+    fn resolver_puts_ipv4_first() {
+        let addrs = super::ipv4_first("localhost:443").unwrap();
+        if let Some(pos) = addrs.iter().position(|a| a.is_ipv6()) {
+            assert!(
+                addrs[pos..].iter().all(|a| a.is_ipv6()),
+                "no IPv4 after an IPv6"
+            );
         }
     }
 
